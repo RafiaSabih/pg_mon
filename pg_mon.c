@@ -51,10 +51,13 @@ static bool     query_monitor_nested_statements = true;
  */
 typedef struct mon_rec
 {
-	uint32 queryid;
-        double total_time;
-        int expected_rows;
-        int actual_rows ;
+	int64 queryid;
+        double current_total_time;
+        double last_total_time;
+        double current_expected_rows;
+        double last_expected_rows;
+        double current_actual_rows;
+        double last_actual_rows;
         int seq_scans ;
         int index_scans;
         int NestedLoopJoin ;
@@ -68,7 +71,7 @@ static int	nesting_level = 0;
 extern void _PG_init(void);
 extern void _PG_fini(void);
 
-#define MON_COLS  9
+#define MON_COLS  12
 #define MON_HT_SIZE       1024
 
 /* LWlock to mange the reading and writing the hash table. */
@@ -90,7 +93,8 @@ static void explain_ExecutorRun(QueryDesc *queryDesc,
 								uint64 count, bool execute_once);
 static void explain_ExecutorFinish(QueryDesc *queryDesc);
 static void explain_ExecutorEnd(QueryDesc *queryDesc);
-static void pgmon_store(QueryDesc *queryDesc);
+static void pgmon_plan_store(QueryDesc *queryDesc);
+static void pgmon_exec_store(QueryDesc *queryDesc);
 
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
@@ -226,8 +230,7 @@ _PG_init(void)
 	/* Install Hooks */
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = shmem_startup;
-
-	prev_ExecutorStart = ExecutorStart_hook;
+        prev_ExecutorStart = ExecutorStart_hook;
 	ExecutorStart_hook = explain_ExecutorStart;
 	prev_ExecutorRun = ExecutorRun_hook;
 	ExecutorRun_hook = explain_ExecutorRun;
@@ -245,8 +248,7 @@ _PG_fini(void)
 {
 	/* Uninstall hooks. */
 	shmem_startup_hook = prev_shmem_startup_hook;
-
-	ExecutorStart_hook = prev_ExecutorStart;
+        ExecutorStart_hook = prev_ExecutorStart;
 	ExecutorRun_hook = prev_ExecutorRun;
 	ExecutorFinish_hook = prev_ExecutorFinish;
 	ExecutorEnd_hook = prev_ExecutorEnd;
@@ -276,6 +278,7 @@ explain_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
 	if (query_monitor_min_duration >= 0)
 	{
+            pgmon_plan_store(queryDesc);
 		/*
 		 * Set up to track total elapsed time in ExecutorRun.  Make sure the
 		 * space is allocated in the per-query context so it will go away at
@@ -354,7 +357,7 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 		/* Save query information if duration is exceeded. */
 		msec = queryDesc->totaltime->total * 1000;
 		if (msec >= query_monitor_min_duration)
-                        pgmon_store(queryDesc);
+                        pgmon_exec_store(queryDesc);
 	}
 
 	if (prev_ExecutorEnd)
@@ -364,10 +367,10 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 }
 
 static void
-pgmon_store(QueryDesc *queryDesc)
+pgmon_plan_store(QueryDesc *queryDesc)
 {
-	mon_rec  *entry;
-        uint32	queryId = string_hash(queryDesc->sourceText, strlen(queryDesc->sourceText));
+	mon_rec  *entry, *temp_entry;
+        int64	queryId =  queryDesc->plannedstmt->queryId;
         bool    found = false;
 
 	Assert(queryDesc!= NULL);
@@ -375,16 +378,15 @@ pgmon_store(QueryDesc *queryDesc)
 	/* Safety check... */
 	if (!mon_ht)
 		return;
-        
-        /* 
-         * Ideally, there should be some check to avoid monitoring queries on
-         * any system tables/views. However for now let's avoid monitoring
-         * queries to select this view atleast, by this ugly hack.
-         */
-        if (strcmp(queryDesc->sourceText, "select * from pg_mon;") == 0)
-            return;
 
-	/* Lookup the hash table entry with shared lock. */
+        /* Keep a temporary record to store the plan information of current query */
+        temp_entry = (mon_rec *) palloc(sizeof(mon_rec));
+        memset(&temp_entry->queryid, 0 , sizeof(mon_rec));
+        temp_entry->queryid = queryId;
+        plan_tree_traversal(queryDesc->plannedstmt->planTree, temp_entry);
+        temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
+
+	/* Lookup the hash table entry and create one if not found. */
 	LWLockAcquire(mon_lock, LW_EXCLUSIVE);
 
 	entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
@@ -392,42 +394,58 @@ pgmon_store(QueryDesc *queryDesc)
 	/* Create new entry, if not present */
 	if (!found)
 	{
-            entry->queryid = queryId;
-
-            /* OK to create a new hash table entry */
-            memset(&entry->total_time, 0 , sizeof(mon_rec));
-
-            entry->total_time = queryDesc->totaltime->total * 1000.0;
-            entry->actual_rows = queryDesc->totaltime->ntuples;
-            entry->expected_rows = queryDesc->planstate->plan->plan_rows;
-
-            plan_tree_traversal(queryDesc->plannedstmt->planTree, entry);
+            /* Update the plan information for the entry*/
+            *entry = *temp_entry;
+            LWLockRelease(mon_lock);
         }
         else
         {
-            /* If the query is repeated find if there are some changes */
+            entry->last_expected_rows = entry->current_expected_rows;
+            entry->last_actual_rows = entry->current_actual_rows;
+            LWLockRelease(mon_lock);
 
-            mon_rec *repeat_entry;
-            uint32 repeat_queryId = queryId + 1;
-            repeat_entry = (mon_rec *) hash_search(mon_ht, &repeat_queryId, HASH_ENTER_NULL, &found);
-
-            /* OK to create a new hash table entry */
-            memset(&repeat_entry->total_time, 0 , sizeof(mon_rec));
-
-            plan_tree_traversal(queryDesc->plannedstmt->planTree, repeat_entry);
-
-            if (entry->HashJoin != repeat_entry->HashJoin ||
-                entry->MergeJoin != repeat_entry->MergeJoin ||
-                entry->NestedLoopJoin != repeat_entry->NestedLoopJoin ||
-                entry->seq_scans != repeat_entry->seq_scans ||
-                entry->index_scans != repeat_entry->index_scans)
+            /* Check if there are any changes in the plan now */
+            if (entry->HashJoin != temp_entry->HashJoin ||
+                entry->MergeJoin != temp_entry->MergeJoin ||
+                entry->NestedLoopJoin != temp_entry->NestedLoopJoin ||
+                entry->seq_scans != temp_entry->seq_scans ||
+                entry->index_scans != temp_entry->index_scans)
 
                  ereport(NOTICE,
 			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-			errmsg("query repeated and there are changes in plan")));
+			errmsg("query repeated but there are changes in plan")));
+        }
+        pfree(temp_entry);
+}
+
+static void
+pgmon_exec_store(QueryDesc *queryDesc)
+{
+	mon_rec  *entry;
+        int64	queryId = queryDesc->plannedstmt->queryId;
+        bool    found = false;
+
+	Assert(queryDesc!= NULL);
+
+	/* Safety check... */
+	if (!mon_ht)
+		return;
+
+	/* Lookup the hash table entry and create one if not found. */
+	LWLockAcquire(mon_lock, LW_EXCLUSIVE);
+
+	entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
+
+        if (entry->current_total_time != 0)
+        {
+            entry->last_total_time = entry->current_total_time;
+            entry->last_actual_rows = entry->current_actual_rows;
         }
 
-	LWLockRelease(mon_lock);
+        entry->current_total_time = queryDesc->totaltime->total * 1000.0;
+        entry->current_actual_rows = queryDesc->totaltime->ntuples;
+
+        LWLockRelease(mon_lock);
 }
 
 void
@@ -507,10 +525,25 @@ pg_mon(PG_FUNCTION_ARGS)
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
 
-                values[i++] = Int32GetDatum(entry->queryid);
-		values[i++] = Float8GetDatumFast(entry->total_time);
-                values[i++] = Int32GetDatum(entry->expected_rows);
-                values[i++] = Int32GetDatum(entry->actual_rows);
+                values[i++] = Int64GetDatum(entry->queryid);
+		values[i++] = Float8GetDatumFast(entry->current_total_time);
+                if (entry->last_total_time == 0)
+                    nulls[i++] = true;
+                else
+                    values[i++] = Float8GetDatumFast(entry->last_total_time);
+
+                values[i++] = Float8GetDatumFast(entry->current_expected_rows);
+                if (entry->last_expected_rows == 0)
+                    nulls[i++] = true;
+                else
+                    values[i++] = Float8GetDatumFast(entry->last_expected_rows);
+
+                values[i++] = Float8GetDatumFast(entry->current_actual_rows);
+
+                if (entry->last_actual_rows == 0)
+                    nulls[i++] = true;
+                else
+                    values[i++] = Float8GetDatumFast(entry->last_actual_rows);
 
                 if (entry->seq_scans == 0)
                     nulls[i++] = true;
