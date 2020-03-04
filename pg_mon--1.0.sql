@@ -11,16 +11,17 @@
 CREATE FUNCTION pg_mon(
     OUT queryid int8,
     OUT current_total_time float8,
-    OUT last_total_time float8,
     OUT current_expected_rows float8,
     OUT last_expected_rows float8,
     OUT current_actual_rows float8,
     OUT last_actual_rows float8,
-    OUT seq_scans int8,
-    OUT index_scans int8,
-    OUT NestedLoopJoin int8,
-    OUT HashJoin int8,
-    OUT MergeJoin int8
+    OUT seq_scans int,
+    OUT index_scans int,
+    OUT NestedLoopJoin int,
+    OUT HashJoin int,
+    OUT MergeJoin int,
+    OUT buckets float8[],
+    OUT frequencies int[]
 )
 RETURNS SETOF record
 AS 'MODULE_PATHNAME'

@@ -9,10 +9,10 @@ endif
 EXTENSION = pg_mon
 DATA = pg_mon--1.0.sql
 
-
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
+
 ifdef ENABLE_GCOV
 	SHLIB_LINK  += -lgcov --coverage
 endif
