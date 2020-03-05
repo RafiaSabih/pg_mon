@@ -42,8 +42,10 @@
 #include "parser/parsetree.h"
 
 Datum		pg_mon(PG_FUNCTION_ARGS);
+Datum		pg_mon_reset(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(pg_mon);
+PG_FUNCTION_INFO_V1(pg_mon_reset);
 
 PG_MODULE_MAGIC;
 
@@ -655,6 +657,33 @@ pg_mon(PG_FUNCTION_ARGS)
         return (Datum) 0;
 }
 
+/*
+ * Reset query information.
+ */
+Datum
+pg_mon_reset(PG_FUNCTION_ARGS)
+{
+    HASH_SEQ_STATUS status;
+    mon_rec *entry;
+    int num_entries;
+
+    LWLockAcquire(mon_lock, LW_EXCLUSIVE);
+    hash_seq_init(&status, mon_ht);
+    while ((entry = hash_seq_search(&status)) != NULL)
+    {
+        hash_search(mon_ht, &entry->queryid, HASH_REMOVE, NULL);
+    }
+
+    /* ensure everything is deleted */
+    num_entries = hash_get_num_entries(mon_ht);
+    Assert(num_entries == 0);
+
+    LWLockRelease(mon_lock);
+
+    PG_RETURN_VOID();
+}
+
+/* Create the histogram for the current query */
 static mon_rec * create_histogram(mon_rec *entry){
 
     int i;
