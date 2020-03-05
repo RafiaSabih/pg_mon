@@ -35,6 +35,11 @@
 #include "nodes/plannodes.h"
 #include "catalog/pg_type_d.h"
 #include "mb/pg_wchar.h"
+#include "utils/rel.h"
+#include "utils/lsyscache.h"
+#include "utils/builtins.h"
+#include "nodes/plannodes.h"
+#include "parser/parsetree.h"
 
 Datum		pg_mon(PG_FUNCTION_ARGS);
 
@@ -53,6 +58,7 @@ static bool     query_monitor_nested_statements = true;
 #define NUMBUCKETS 10
 #define HIST_THRESH 1.001
 #define BUCKET_THRESH 0.1
+#define MAX_TABLES  100
 /*
  * Record for a query.
  */
@@ -64,8 +70,8 @@ typedef struct mon_rec
         double last_expected_rows;
         double current_actual_rows;
         double last_actual_rows;
-        int seq_scans ;
-        int index_scans;
+        NameData seq_scans[MAX_TABLES];
+        NameData index_scans[MAX_TABLES];
         int NestedLoopJoin ;
         int HashJoin;
         int MergeJoin;
@@ -105,7 +111,7 @@ static void pgmon_exec_store(QueryDesc *queryDesc);
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void shmem_shutdown(int code, Datum arg);
 
-static void plan_tree_traversal(Plan *plan_node, mon_rec *entry);
+static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
 static mon_rec * create_histogram(mon_rec *entry);
 static void sort_hist(double *buckets, int *freq, int len);
 static void swapd(double *xp, double *yp);
@@ -394,7 +400,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
         temp_entry = (mon_rec *) palloc(sizeof(mon_rec));
         memset(&temp_entry->queryid, 0 , sizeof(mon_rec));
         temp_entry->queryid = queryId;
-        plan_tree_traversal(queryDesc->plannedstmt->planTree, temp_entry);
+        plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, temp_entry);
         temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
 
         /* Lookup the hash table entry and create one if not found. */
@@ -463,21 +469,35 @@ pgmon_exec_store(QueryDesc *queryDesc)
 }
 
 void
-plan_tree_traversal(Plan *plan_node, mon_rec *entry)
+plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
 {
+    const char *relname;
+    int i;
+    IndexScan *idx;
+    Scan *scan;
+    RangeTblEntry *rte;
+    Index relid;
     /* Iterate through the plan to find all the required nodes*/
             if (plan_node != NULL)
             {
                 switch(plan_node->type)
                 {
                     case T_SeqScan:
-                        entry->seq_scans++;
+                        scan = (Scan *)plan_node;
+                        relid = scan->scanrelid;
+                        rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
+                        relname = get_rel_name(rte->relid);
+                        for (i = 0; strcmp(entry->seq_scans[i].data, "") != 0; i++);
+                        namestrcpy(&entry->seq_scans[i], relname);
                         break;
                     case T_IndexScan:
                     case T_IndexOnlyScan:
                     case T_BitmapIndexScan:
                     case T_BitmapHeapScan:
-                        entry->index_scans++;
+                        idx = (IndexScan *)plan_node;
+                        relname = get_rel_name(idx->indexid);
+                        for (i = 0; strcmp(entry->index_scans[i].data, "") != 0; i++);
+                        namestrcpy(&entry->index_scans[i], relname);
                         break;
                     case T_NestLoop:
                         entry->NestedLoopJoin++;
@@ -491,8 +511,8 @@ plan_tree_traversal(Plan *plan_node, mon_rec *entry)
                     default:
                         break;
                 }
-                plan_tree_traversal(plan_node->lefttree, entry);
-                plan_tree_traversal(plan_node->righttree, entry);
+                plan_tree_traversal(queryDesc, plan_node->lefttree, entry);
+                plan_tree_traversal(queryDesc, plan_node->righttree, entry);
             }
 }
 /*
@@ -554,15 +574,30 @@ pg_mon(PG_FUNCTION_ARGS)
                 else
                     values[i++] = Float8GetDatumFast(entry->last_actual_rows);
 
-                if (entry->seq_scans == 0)
+                if (strcmp(entry->seq_scans[0].data, "") == 0)
                     nulls[i++] = true;
                 else
-                    values[i++] = Int32GetDatum(entry->seq_scans);
-
-                if (entry->index_scans == 0)
+                {
+                    Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
+                    ArrayType  *arry;
+                    int n, idx=0;
+                    for (n = 0; n < MAX_TABLES && strcmp(entry->seq_scans[n].data, "") != 0; n++)
+                            numdatums[idx++] = NameGetDatum(&entry->seq_scans[n]);
+                    arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
+                    values[i++] = PointerGetDatum(arry);
+                }
+                if (strcmp(entry->index_scans[0].data, "") == 0)
                     nulls[i++] = true;
                 else
-                    values[i++] = Int32GetDatum(entry->index_scans);
+                {
+                    Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
+                    ArrayType  *arry;
+                    int n, idx=0;
+                    for (n = 0; n < MAX_TABLES && strcmp(entry->index_scans[n].data, "") != 0; n++)
+                            numdatums[idx++] = NameGetDatum(&entry->index_scans[n]);
+                    arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
+                    values[i++] = PointerGetDatum(arry);
+                }
 
                 if (entry->NestedLoopJoin == 0)
                     nulls[i++] = true;
