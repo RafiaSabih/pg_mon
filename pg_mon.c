@@ -9,6 +9,10 @@
  * -------------------------------------------------------------------------
  */
 #include <postgres.h>
+#include <ctype.h>
+#include <unistd.h>
+#include <math.h>
+#include <float.h>
 
 #include <limits.h>
 
@@ -22,14 +26,11 @@
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/tuplestore.h"
-#include "utils/timestamp.h"
-#include "utils/acl.h"
 #include "funcapi.h"
 
 #include "access/parallel.h"
 #include "commands/explain.h"
 #include "executor/instrument.h"
-#include "jit/jit.h"
 #include "utils/guc.h"
 
 #include "nodes/plannodes.h"
@@ -40,6 +41,7 @@
 #include "utils/builtins.h"
 #include "nodes/plannodes.h"
 #include "parser/parsetree.h"
+
 
 Datum		pg_mon(PG_FUNCTION_ARGS);
 Datum		pg_mon_reset(PG_FUNCTION_ARGS);
@@ -58,9 +60,10 @@ static bool     query_monitor_nested_statements = true;
 #define MON_HT_SIZE       1024
 
 #define NUMBUCKETS 10
-#define HIST_THRESH 1.001
-#define BUCKET_THRESH 0.1
 #define MAX_TABLES  100
+#define BUCKET_THRESH 1.0 /* Minimum difference between consecutive histogram buckets */
+#define TIME_THRESH 10.0 /* Minimum difference between consecutive histogram buckets time wise */
+
 /*
  * Record for a query.
  */
@@ -108,7 +111,6 @@ static void explain_ExecutorFinish(QueryDesc *queryDesc);
 static void explain_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
 static void pgmon_exec_store(QueryDesc *queryDesc);
-
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void shmem_shutdown(int code, Datum arg);
@@ -119,7 +121,7 @@ static void sort_hist(double *buckets, int *freq, int len);
 static void swapd(double *xp, double *yp);
 static void swapi(int *xp, int *yp);
 static bool inbetween(double low, double val, double high);
-static bool require_repartition(double *buckets, int *freq);
+static void repartition_histogram(float8 *buckets, int *freq, float8 avg_freq);
 
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
@@ -424,17 +426,6 @@ pgmon_plan_store(QueryDesc *queryDesc)
             entry->last_expected_rows = entry->current_expected_rows;
             entry->last_actual_rows = entry->current_actual_rows;
             LWLockRelease(mon_lock);
-
-            /* Check if there are any changes in the plan now */
-            if (entry->HashJoin != temp_entry->HashJoin ||
-                entry->MergeJoin != temp_entry->MergeJoin ||
-                entry->NestedLoopJoin != temp_entry->NestedLoopJoin ||
-                entry->seq_scans != temp_entry->seq_scans ||
-                entry->index_scans != temp_entry->index_scans)
-
-                 ereport(NOTICE,
-                        (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                        errmsg("query repeated but there are changes in plan")));
         }
         pfree(temp_entry);
 }
@@ -462,7 +453,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
            entry->last_actual_rows = entry->current_actual_rows;
         }
 
-        entry->current_total_time = queryDesc->totaltime->total * 1000.0;
+        entry->current_total_time = queryDesc->totaltime->total * 1000; //(time in seconds)
         entry->current_actual_rows = queryDesc->totaltime->ntuples;
 
         entry = create_histogram(entry);
@@ -513,8 +504,10 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                     default:
                         break;
                 }
-                plan_tree_traversal(queryDesc, plan_node->lefttree, entry);
-                plan_tree_traversal(queryDesc, plan_node->righttree, entry);
+                if (plan_node->lefttree)
+                    plan_tree_traversal(queryDesc, plan_node->lefttree, entry);
+                if (plan_node->righttree)
+                    plan_tree_traversal(queryDesc, plan_node->righttree, entry);
             }
 }
 /*
@@ -686,82 +679,68 @@ pg_mon_reset(PG_FUNCTION_ARGS)
 /* Create the histogram for the current query */
 static mon_rec * create_histogram(mon_rec *entry){
 
-    int i;
-    float8 val = entry->current_total_time;
+    int i, total = 0, j= 0;
+    float8 val = entry->current_total_time, avg_freq, mean_var;
     bool done = false;
 
-    /* Case 0: This is the first bucket to be created*/
-    if (entry->buckets[0] == 0){
-        entry->buckets[0] = entry->current_total_time;
-        entry->freq[0] = 1;
-    }
-    else{
-        /* Find the next empty bucket */
-        for (i = 0; entry->buckets[i] != 0; i++)
+    /* Find the matching bucket */
+    for (i = 0; i < NUMBUCKETS && entry->buckets[i] != 0; i++)
+    {
+        if (i == 0 && val * BUCKET_THRESH < entry->buckets[i])
         {
-            /* Case 1: find if the current time fits in available buckets */
-            if ((1.0 - BUCKET_THRESH) * entry->buckets[i] <= val && val <= (1 + BUCKET_THRESH) *entry->buckets[i])
+            /*Case 1: if the current value is smaller than first bucket */
+            for (j = 1; j < NUMBUCKETS && entry->buckets[j] != 0; j++);
+            if (j < NUMBUCKETS)
             {
-                entry->freq[i]++;
+                entry->buckets[j] = val;
+                entry->freq[j] = 1;
                 done = true;
+                total += entry->freq[j];
+                sort_hist(entry->buckets, entry->freq, j);
             }
+            else
+            {
+                entry->freq[1] += entry->freq[0];
+                entry->buckets[0] = val;
+                entry->freq[0] = 1;
+                total += entry->freq[0];
+            }
+
         }
-        if (!done && i < NUMBUCKETS)
+        /* Case 2: find if the current time fits in available buckets */
+        if (i > 0 && !done && inbetween(entry->buckets[i-1], val, entry->buckets[i]))
         {
-            /* Case 2: fill the next empty bucket with the current time */
-            entry->buckets[i] = val;
-            entry->freq[i] = 1;
+            entry->freq[i]++;
             done = true;
-            sort_hist(entry->buckets, entry->freq, i+1);
-        }
-        else if (!done)
-        {
-            /* Case 3: find in which bucket the current value goes */
-            for (i = 1; i < NUMBUCKETS ; i++)
-            {
-                if (inbetween(entry->buckets[i-1], val, entry->buckets[i]))
-                {
-                    entry->freq[i]++;
-                    done = true;
-                }
-            }
-            if (!done && val > entry->buckets[NUMBUCKETS -1])
-            {
-                /* Case 4: when value is beyond the last bucket, extend the bucket */
-                entry->buckets[NUMBUCKETS -1] = val;
-                entry->freq[NUMBUCKETS -1]++;
-                done = true;
-            }
-            if (require_repartition(entry->buckets, entry->freq))
-            {
-                /* Case 6: repartition the histogram */
-            }
+            total += entry->freq[i];
         }
     }
+    if (!done && i < NUMBUCKETS)
+    {
+        /* Case 3: fill the next empty bucket with the current time */
+        entry->buckets[i] = val;
+        entry->freq[i] = 1;
+        done = true;
+        total += entry->freq[i];
+        sort_hist(entry->buckets, entry->freq, i+1);
+    }
+
+    if (!done && val > entry->buckets[NUMBUCKETS -1])
+    {
+        /* Case 4: when value is beyond the last bucket, extend the bucket */
+        entry->buckets[NUMBUCKETS -1] = val;
+        entry->freq[NUMBUCKETS -1]++;
+        done = true;
+        total += entry->freq[i];
+    }
+
+    avg_freq = (float8)total/NUMBUCKETS;
 
     return entry;
 }
 
-static bool require_repartition(float8 *buckets, int *freq)
-{
-    int i, sum = 0, total = 0;
-    for (i = 0; i < NUMBUCKETS; i++)
-    {
-        total += freq[i];
-    }
-    for (i = 0; i < NUMBUCKETS; i++)
-    {
-        sum += (freq[i] - (freq[i]/total));
-    }
-    if (sum < HIST_THRESH)
-        return true;
-    return false;
-}
-
 static bool inbetween(float8 low, float8 val, float8 high){
-    if(val * BUCKET_THRESH < low)
-        return false;
-    if(val * BUCKET_THRESH < high && val > low)
+    if(val > low && val * BUCKET_THRESH < high)
         return true;
     return false;
 }
