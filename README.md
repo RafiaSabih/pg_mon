@@ -41,7 +41,7 @@ Important information available via the extension:
     - buckets - This contains the upper bound of the buckets, since this is serial histogram
                     lower bound can be taken as the end of the pervious bucket.
     - frequencies - This contains the corresponding frequencies of the buckets.
-             In the current version, the number of histogram buckets is fixed to ten.
+    In the current version, the number of histogram buckets is fixed to ten.
  - joins information - The view also contains columns for each of the three join methods, and
                         value in them shows the total number of joins of the corresponding type
                         in the query.
