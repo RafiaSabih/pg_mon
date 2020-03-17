@@ -37,11 +37,10 @@ Important information available via the extension:
  - seq_scan - name of the relation(s) using seq scan in the query
  - query time histogram - timing of all the runs of a query are summarised in a histogram.
                           This is serial based equi-depth histogram. this information is
-                          available via two columns of the view,
-                          
-        - buckets - This contains the upper bound of the buckets, since this is serial histogram
+                          available via two columns of the view,        
+    - buckets - This contains the upper bound of the buckets, since this is serial histogram
                     lower bound can be taken as the end of the pervious bucket.
-        - frequencies - This contains the corresponding frequencies of the buckets.
+    - frequencies - This contains the corresponding frequencies of the buckets.
              In the current version, the number of histogram buckets is fixed to ten.
  - joins information - The view also contains columns for each of the three join methods, and
                         value in them shows the total number of joins of the corresponding type
