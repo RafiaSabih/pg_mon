@@ -30,3 +30,20 @@ How to use the extension:
     - query_monitor.nested_statements - boolean guc to set if monitor also the nested statement.
                                         Default value is set to true. This is particularly useful
                                         when monitoring queries executed in function calls, etc.
+
+Important information available via the extension:
+
+ - indexes - name of the index(es) used by the query
+ - seq_scan - name of the relation(s) using seq scan in the query
+ - query time histogram - timing of all the runs of a query are summarised in a histogram.
+                          This is serial based equi-depth histogram. this information is
+                          available via two columns of the view,
+        - buckets - This contains the upper bound of the buckets, since this is serial histogram
+                    lower bound can be taken as the end of the pervious bucket.
+        - frequencies - This contains the corresponding frequencies of the buckets.
+             In the current version, the number of histogram buckets is fixed to ten.
+ - joins information - The view also contains columns for each of the three join methods, and
+                        value in them shows the total number of joins of the corresponding type
+                        in the query.
+ - number of rows - This view also gives the information of total number of estimated and actual
+                     rows in the current and last run of the query.
