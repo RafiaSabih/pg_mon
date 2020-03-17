@@ -38,6 +38,7 @@ Important information available via the extension:
  - query time histogram - timing of all the runs of a query are summarised in a histogram.
                           This is serial based equi-depth histogram. this information is
                           available via two columns of the view,
+                          
         - buckets - This contains the upper bound of the buckets, since this is serial histogram
                     lower bound can be taken as the end of the pervious bucket.
         - frequencies - This contains the corresponding frequencies of the buckets.
