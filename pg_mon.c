@@ -59,10 +59,8 @@ static bool     query_monitor_nested_statements = true;
 #define MON_COLS  13
 #define MON_HT_SIZE       1024
 
-#define NUMBUCKETS 10
+#define NUMBUCKETS 15
 #define MAX_TABLES  100
-#define BUCKET_THRESH 1.0 /* Minimum difference between consecutive histogram buckets */
-#define TIME_THRESH 10.0 /* Minimum difference between consecutive histogram buckets time wise */
 
 /*
  * Record for a query.
@@ -117,15 +115,12 @@ static void shmem_shutdown(int code, Datum arg);
 
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
 static mon_rec * create_histogram(mon_rec *entry);
-static void sort_hist(double *buckets, int *freq, int len);
-static void swapd(double *xp, double *yp);
-static void swapi(int *xp, int *yp);
-static bool inbetween(double low, double val, double high);
-static void repartition_histogram(float8 *buckets, int *freq, float8 avg_freq);
 
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
 
+/* Bucket boundaries for the histogram in ms, from 5 ms to 15 minutes */
+float8 bucket_bounds[NUMBUCKETS] = {5, 10, 15, 30, 60, 120, 240, 480, 1000, 10000, 30000, 60000, 300000, 600000, 900000};
 /*
  * shmem_startup hook: allocate and attach to shared memory,
  */
@@ -393,6 +388,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
         mon_rec  *entry, *temp_entry;
         int64	queryId =  queryDesc->plannedstmt->queryId;
         bool    found = false;
+        int i;
 
         Assert(queryDesc!= NULL);
 
@@ -417,7 +413,9 @@ pgmon_plan_store(QueryDesc *queryDesc)
         {
             /* Update the plan information for the entry*/
             *entry = *temp_entry;
-            memset(entry->buckets, 0, NUMBUCKETS * sizeof(double));
+            for (i = 0; i < NUMBUCKETS; i++)
+                entry->buckets[i] = bucket_bounds[i];
+
             memset(entry->freq, 0, NUMBUCKETS * sizeof(int));
             LWLockRelease(mon_lock);
         }
@@ -461,7 +459,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
         LWLockRelease(mon_lock);
 }
 
-void
+static void
 plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
 {
     const char *relname;
@@ -510,6 +508,7 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                     plan_tree_traversal(queryDesc, plan_node->righttree, entry);
             }
 }
+
 /*
  * This is called when user requests the pg_mon view.
  */
@@ -616,7 +615,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     Datum	   *numdatums = (Datum *) palloc(NUMBUCKETS * sizeof(Datum));
                     ArrayType  *arry;
                     int n, idx=0;
-                    for (n = 0; n < NUMBUCKETS && entry->buckets[n] > 0; n++)
+                    for (n = 0; n < NUMBUCKETS && entry->freq[n] > 0; n++)
                             numdatums[idx++] = Float8GetDatum(entry->buckets[n]);
                     arry = construct_array(numdatums, idx, FLOAT8OID, sizeof(float8), true, 'd');
                     values[i++] = PointerGetDatum(arry);
@@ -677,96 +676,27 @@ pg_mon_reset(PG_FUNCTION_ARGS)
 }
 
 /* Create the histogram for the current query */
-static mon_rec * create_histogram(mon_rec *entry){
+static mon_rec * create_histogram(mon_rec *entry)
+{
+    int i;
+    float8 val = entry->current_total_time;
 
-    int i, total = 0, j= 0;
-    float8 val = entry->current_total_time, avg_freq, mean_var;
-    bool done = false;
+    /* if the last value of bucket is more than the current time, then increase the bucket boundary */
+    if (val > entry->buckets[NUMBUCKETS-1])
+    {
+        entry->buckets[NUMBUCKETS-1] = val;
+        entry->freq[NUMBUCKETS-1]++;
+        return entry;
+    }
 
     /* Find the matching bucket */
-    for (i = 0; i < NUMBUCKETS && entry->buckets[i] != 0; i++)
+    for (i = 0; i < NUMBUCKETS; i++)
     {
-        if (i == 0 && val * BUCKET_THRESH < entry->buckets[i])
-        {
-            /*Case 1: if the current value is smaller than first bucket */
-            for (j = 1; j < NUMBUCKETS && entry->buckets[j] != 0; j++);
-            if (j < NUMBUCKETS)
-            {
-                entry->buckets[j] = val;
-                entry->freq[j] = 1;
-                done = true;
-                total += entry->freq[j];
-                sort_hist(entry->buckets, entry->freq, j);
-            }
-            else
-            {
-                entry->freq[1] += entry->freq[0];
-                entry->buckets[0] = val;
-                entry->freq[0] = 1;
-                total += entry->freq[0];
-            }
-
-        }
-        /* Case 2: find if the current time fits in available buckets */
-        if (i > 0 && !done && inbetween(entry->buckets[i-1], val, entry->buckets[i]))
+        if (val <= entry->buckets[i])
         {
             entry->freq[i]++;
-            done = true;
-            total += entry->freq[i];
+            break;
         }
     }
-    if (!done && i < NUMBUCKETS)
-    {
-        /* Case 3: fill the next empty bucket with the current time */
-        entry->buckets[i] = val;
-        entry->freq[i] = 1;
-        done = true;
-        total += entry->freq[i];
-        sort_hist(entry->buckets, entry->freq, i+1);
-    }
-
-    if (!done && val > entry->buckets[NUMBUCKETS -1])
-    {
-        /* Case 4: when value is beyond the last bucket, extend the bucket */
-        entry->buckets[NUMBUCKETS -1] = val;
-        entry->freq[NUMBUCKETS -1]++;
-        done = true;
-        total += entry->freq[i];
-    }
-
-    avg_freq = (float8)total/NUMBUCKETS;
-
     return entry;
-}
-
-static bool inbetween(float8 low, float8 val, float8 high){
-    if(val > low && val * BUCKET_THRESH < high)
-        return true;
-    return false;
-}
-
-static void sort_hist(float8 *buckets, int *freq, int len){
-    int i, j;
-    for (i = 0; i < len-1; i++){
-        // Last i elements are already in place
-        for (j = 0; j < len-i-1; j++)
-            if (buckets[j] > buckets[j+1])
-            {
-                 swapd(&buckets[j], &buckets[j+1]);
-                 swapi(&freq[j], &freq[j+1]);
-            }
-    }
-}
-
-static void swapd(float8 *xp, float8 *yp)
-{
-    double temp = *xp;
-    *xp = *yp;
-    *yp = temp;
-}
-void swapi(int *xp, int *yp)
-{
-    double temp = *xp;
-    *xp = *yp;
-    *yp = temp;
 }
