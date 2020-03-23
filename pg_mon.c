@@ -20,7 +20,10 @@
 #include "storage/lwlock.h"
 #include "storage/ipc.h"
 #include "storage/shmem.h"
-#if PG_VERSION_NUM >= 100000
+#if PG_VERSION_NUM >= 130000
+#include "common/hashfn.h"
+#endif
+#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 130000
 #include "utils/hashutils.h"
 #endif
 #include "utils/hsearch.h"
@@ -326,10 +329,18 @@ explain_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
                 else
                         standard_ExecutorRun(queryDesc, direction, count, execute_once);
         }
+#if PG_VERSION_NUM < 130000
+        PG_CATCH();
+	{
+		nesting_level--;
+		PG_RE_THROW();
+	}
+#else
         PG_FINALLY();
         {
                 nesting_level--;
         }
+#endif
         PG_END_TRY();
 }
 
@@ -347,10 +358,18 @@ explain_ExecutorFinish(QueryDesc *queryDesc)
                 else
                         standard_ExecutorFinish(queryDesc);
         }
+#if PG_VERSION_NUM < 130000
+        PG_CATCH();
+	{
+		nesting_level--;
+		PG_RE_THROW();
+	}
+#else
         PG_FINALLY();
         {
                 nesting_level--;
         }
+#endif
         PG_END_TRY();
 }
 
