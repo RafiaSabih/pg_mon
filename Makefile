@@ -9,6 +9,8 @@ endif
 EXTENSION = pg_mon
 DATA = pg_mon--1.0.sql
 
+REGRESS = pg_mon
+
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
