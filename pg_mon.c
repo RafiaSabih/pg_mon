@@ -59,7 +59,7 @@ static int	query_monitor_min_duration = 1000; /* set -1 for disable, in MS */
 static bool     query_monitor_timing = true;
 static bool     query_monitor_nested_statements = true;
 
-#define MON_COLS  13
+#define MON_COLS  14
 #define MON_HT_SIZE       1024
 
 #define NUMBUCKETS 15
@@ -76,6 +76,7 @@ typedef struct mon_rec
         double last_expected_rows;
         double current_actual_rows;
         double last_actual_rows;
+        bool is_parallel;
         NameData seq_scans[MAX_TABLES];
         NameData index_scans[MAX_TABLES];
         int NestedLoopJoin ;
@@ -485,6 +486,7 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
     int i;
     IndexScan *idx;
     Scan *scan;
+    Plan plan;
     RangeTblEntry *rte;
     Index relid;
     /* Iterate through the plan to find all the required nodes*/
@@ -494,20 +496,27 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                 {
                     case T_SeqScan:
                         scan = (Scan *)plan_node;
+                        plan = scan->plan;
                         relid = scan->scanrelid;
                         rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
                         relname = get_rel_name(rte->relid);
                         for (i = 0; strcmp(entry->seq_scans[i].data, "") != 0; i++);
                         namestrcpy(&entry->seq_scans[i], relname);
+                        if (plan.parallel_aware)
+                            entry->is_parallel = true;
                         break;
                     case T_IndexScan:
                     case T_IndexOnlyScan:
                     case T_BitmapIndexScan:
                     case T_BitmapHeapScan:
                         idx = (IndexScan *)plan_node;
+                        scan = &(idx->scan);
+                        plan = scan->plan;
                         relname = get_rel_name(idx->indexid);
                         for (i = 0; strcmp(entry->index_scans[i].data, "") != 0; i++);
                         namestrcpy(&entry->index_scans[i], relname);
+                        if (plan.parallel_aware)
+                            entry->is_parallel = true;
                         break;
                     case T_NestLoop:
                         entry->NestedLoopJoin++;
@@ -587,6 +596,12 @@ pg_mon(PG_FUNCTION_ARGS)
                 else
                     values[i++] = Float8GetDatumFast(entry->last_actual_rows);
 
+                if(entry->is_parallel)
+                {
+                    values[i++] = BoolGetDatum(entry->is_parallel);
+                }
+                else
+                    nulls[i++] = true;
                 if (strcmp(entry->seq_scans[0].data, "") == 0)
                     nulls[i++] = true;
                 else

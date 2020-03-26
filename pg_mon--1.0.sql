@@ -15,6 +15,7 @@ CREATE FUNCTION pg_mon(
     OUT last_expected_rows float8,
     OUT current_actual_rows float8,
     OUT last_actual_rows float8,
+    OUT is_parallel_query bool,
     OUT seq_scans name[],
     OUT index_scans name[],
     OUT NestedLoopJoin int,
