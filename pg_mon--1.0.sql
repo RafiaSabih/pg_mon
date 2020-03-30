@@ -11,16 +11,19 @@
 CREATE FUNCTION pg_mon(
     OUT queryid int8,
     OUT current_total_time float8,
+    OUT first_tuple_time float8,
     OUT current_expected_rows float8,
     OUT last_expected_rows float8,
     OUT current_actual_rows float8,
     OUT last_actual_rows float8,
     OUT is_parallel_query bool,
+    OUT modify_table bool,
     OUT seq_scans name[],
     OUT index_scans name[],
-    OUT NestedLoopJoin int,
-    OUT HashJoin int,
-    OUT MergeJoin int,
+    OUT other_scans name,
+    OUT nested_loop_join int,
+    OUT hash_join int,
+    OUT merge_join int,
     OUT buckets float8[],
     OUT frequencies int[]
 )

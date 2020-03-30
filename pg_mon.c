@@ -37,7 +37,11 @@
 #include "utils/guc.h"
 
 #include "nodes/plannodes.h"
+#if PG_VERSION_NUM >= 130000
 #include "catalog/pg_type_d.h"
+#else
+#include "catalog/pg_type.h"
+#endif
 #include "mb/pg_wchar.h"
 #include "utils/rel.h"
 #include "utils/lsyscache.h"
@@ -59,7 +63,7 @@ static int	query_monitor_min_duration = 1000; /* set -1 for disable, in MS */
 static bool     query_monitor_timing = true;
 static bool     query_monitor_nested_statements = true;
 
-#define MON_COLS  14
+#define MON_COLS  17
 #define MON_HT_SIZE       1024
 
 #define NUMBUCKETS 15
@@ -72,13 +76,16 @@ typedef struct mon_rec
 {
         int64 queryid;
         double current_total_time;
+        double first_tuple_time;
         double current_expected_rows;
         double last_expected_rows;
         double current_actual_rows;
         double last_actual_rows;
         bool is_parallel;
+        bool ModifyTable;
         NameData seq_scans[MAX_TABLES];
         NameData index_scans[MAX_TABLES];
+        NameData other_scan;
         int NestedLoopJoin ;
         int HashJoin;
         int MergeJoin;
@@ -113,6 +120,7 @@ static void explain_ExecutorFinish(QueryDesc *queryDesc);
 static void explain_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
 static void pgmon_exec_store(QueryDesc *queryDesc);
+static void pgmon_save_firsttuple(QueryDesc *queryDesc);
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void shmem_shutdown(int code, Datum arg);
@@ -352,6 +360,7 @@ static void
 explain_ExecutorFinish(QueryDesc *queryDesc)
 {
         nesting_level++;
+        pgmon_save_firsttuple(queryDesc);
         PG_TRY();
         {
                 if (prev_ExecutorFinish)
@@ -402,6 +411,39 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
                 standard_ExecutorEnd(queryDesc);
 }
 
+/* Save the time taken by processing of first tuple */
+static void
+pgmon_save_firsttuple(QueryDesc *queryDesc)
+{
+    mon_rec  *entry;
+    int64	queryId =  queryDesc->plannedstmt->queryId;
+    bool    found = false;
+
+    Assert(queryDesc!= NULL);
+
+    /* Safety check... */
+    if (!mon_ht)
+            return;
+
+    /* Lookup the hash table entry and create one if not found. */
+    LWLockAcquire(mon_lock, LW_EXCLUSIVE);
+
+    entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
+
+     /* Save the first tuple time for the entry */
+    if (found)
+    {
+        entry->first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
+        LWLockRelease(mon_lock);
+    }
+    else
+    {
+        LWLockRelease(mon_lock);
+        return;
+    }
+
+}
+
 static void
 pgmon_plan_store(QueryDesc *queryDesc)
 {
@@ -420,6 +462,15 @@ pgmon_plan_store(QueryDesc *queryDesc)
         temp_entry = (mon_rec *) palloc(sizeof(mon_rec));
         memset(&temp_entry->queryid, 0 , sizeof(mon_rec));
         temp_entry->queryid = queryId;
+        temp_entry->ModifyTable = false;
+        temp_entry->is_parallel = false;
+        temp_entry->MergeJoin = 0;
+        temp_entry->NestedLoopJoin = 0;
+        temp_entry->HashJoin = 0;
+        temp_entry->last_actual_rows = 0;
+        temp_entry->last_expected_rows = 0;
+        namestrcpy(&temp_entry->other_scan, "");
+
         plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, temp_entry);
         temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
 
@@ -486,7 +537,6 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
     int i;
     IndexScan *idx;
     Scan *scan;
-    Plan plan;
     RangeTblEntry *rte;
     Index relid;
     /* Iterate through the plan to find all the required nodes*/
@@ -496,14 +546,11 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                 {
                     case T_SeqScan:
                         scan = (Scan *)plan_node;
-                        plan = scan->plan;
                         relid = scan->scanrelid;
                         rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
                         relname = get_rel_name(rte->relid);
                         for (i = 0; strcmp(entry->seq_scans[i].data, "") != 0; i++);
                         namestrcpy(&entry->seq_scans[i], relname);
-                        if (plan.parallel_aware)
-                            entry->is_parallel = true;
                         break;
                     case T_IndexScan:
                     case T_IndexOnlyScan:
@@ -511,12 +558,42 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                     case T_BitmapHeapScan:
                         idx = (IndexScan *)plan_node;
                         scan = &(idx->scan);
-                        plan = scan->plan;
                         relname = get_rel_name(idx->indexid);
                         for (i = 0; strcmp(entry->index_scans[i].data, "") != 0; i++);
                         namestrcpy(&entry->index_scans[i], relname);
-                        if (plan.parallel_aware)
-                            entry->is_parallel = true;
+                        break;
+                    case T_FunctionScan:
+                        namestrcpy(&entry->other_scan, "T_FunctionScan");
+                        break;
+                    case T_SampleScan:
+                        namestrcpy(&entry->other_scan, "T_SampleScan");
+                        break;
+                    case T_TidScan:
+                        namestrcpy(&entry->other_scan, "T_TidScan");
+                        break;
+                    case T_SubqueryScan:
+                        namestrcpy(&entry->other_scan, "T_SubqueryScan");
+                        break;
+                    case T_ValuesScan:
+                        namestrcpy(&entry->other_scan, "T_ValuesScan");
+                        break;
+                    case T_TableFuncScan:
+                        namestrcpy(&entry->other_scan, "T_TableFuncScan");
+                        break;
+                    case T_CteScan:
+                        namestrcpy(&entry->other_scan, "T_CteScan");
+                        break;
+                    case T_NamedTuplestoreScan:
+                        namestrcpy(&entry->other_scan, "T_NamedTuplestoreScan");
+                        break;
+                    case T_WorkTableScan:
+                        namestrcpy(&entry->other_scan, "T_WorkTableScan");
+                        break;
+                    case T_ForeignScan:
+                        namestrcpy(&entry->other_scan, "T_ForeignScan");
+                        break;
+                    case T_CustomScan:
+                        namestrcpy(&entry->other_scan, "T_CustomScan");
                         break;
                     case T_NestLoop:
                         entry->NestedLoopJoin++;
@@ -526,6 +603,13 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         break;
                     case T_HashJoin:
                         entry->HashJoin++;
+                        break;
+                    case T_Gather:
+                    case T_GatherMerge:
+                        entry->is_parallel = true;
+                        break;
+                    case T_ModifyTable:
+                        entry->ModifyTable = true;
                         break;
                     default:
                         break;
@@ -583,26 +667,15 @@ pg_mon(PG_FUNCTION_ARGS)
 
                 values[i++] = Int64GetDatum(entry->queryid);
                 values[i++] = Float8GetDatumFast(entry->current_total_time);
+                values[i++] = Float8GetDatumFast(entry->first_tuple_time);
                 values[i++] = Float8GetDatumFast(entry->current_expected_rows);
-                if (entry->last_expected_rows == 0)
-                    nulls[i++] = true;
-                else
-                    values[i++] = Float8GetDatumFast(entry->last_expected_rows);
-
+                values[i++] = Float8GetDatumFast(entry->last_expected_rows);
                 values[i++] = Float8GetDatumFast(entry->current_actual_rows);
+                values[i++] = Float8GetDatumFast(entry->last_actual_rows);
+                values[i++] = BoolGetDatum(entry->is_parallel);
+                values[i++] = BoolGetDatum(entry->ModifyTable);
 
-                if (entry->last_actual_rows == 0)
-                    nulls[i++] = true;
-                else
-                    values[i++] = Float8GetDatumFast(entry->last_actual_rows);
-
-                if(entry->is_parallel)
-                {
-                    values[i++] = BoolGetDatum(entry->is_parallel);
-                }
-                else
-                    nulls[i++] = true;
-                if (strcmp(entry->seq_scans[0].data, "") == 0)
+                if (!entry->ModifyTable && strcmp(entry->seq_scans[0].data, "") == 0)
                     nulls[i++] = true;
                 else
                 {
@@ -614,7 +687,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
                     values[i++] = PointerGetDatum(arry);
                 }
-                if (strcmp(entry->index_scans[0].data, "") == 0)
+                if (!entry->ModifyTable && strcmp(entry->index_scans[0].data, "") == 0)
                     nulls[i++] = true;
                 else
                 {
@@ -626,21 +699,10 @@ pg_mon(PG_FUNCTION_ARGS)
                     arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
                     values[i++] = PointerGetDatum(arry);
                 }
-
-                if (entry->NestedLoopJoin == 0)
-                    nulls[i++] = true;
-                else
-                    values[i++] = Int32GetDatum(entry->NestedLoopJoin);
-
-                if (entry->HashJoin == 0)
-                    nulls[i++] = true;
-                else
-                    values[i++] = Int32GetDatum(entry->HashJoin);
-
-                if (entry->MergeJoin == 0)
-                    nulls[i++] = true;
-                else
-                    values[i++] = Int32GetDatum(entry->MergeJoin);
+                values[i++] = NameGetDatum(&entry->other_scan);
+                values[i++] = Int32GetDatum(entry->NestedLoopJoin);
+                values[i++] = Int32GetDatum(entry->HashJoin);
+                values[i++] = Int32GetDatum(entry->MergeJoin);
 
                 if(entry->buckets == NULL)
                     nulls[i++] = true;
