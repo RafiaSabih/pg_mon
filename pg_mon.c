@@ -63,11 +63,11 @@ static int	query_monitor_min_duration = 1000; /* set -1 for disable, in MS */
 static bool     query_monitor_timing = true;
 static bool     query_monitor_nested_statements = true;
 
-#define MON_COLS  17
+#define MON_COLS  18
 #define MON_HT_SIZE       1024
 
-#define NUMBUCKETS 15
-#define MAX_TABLES  100
+#define NUMBUCKETS 30
+#define MAX_TABLES  50
 
 /*
  * Record for a query.
@@ -85,11 +85,12 @@ typedef struct mon_rec
         bool ModifyTable;
         NameData seq_scans[MAX_TABLES];
         NameData index_scans[MAX_TABLES];
+        NameData bitmap_scans[MAX_TABLES];
         NameData other_scan;
         int NestedLoopJoin ;
         int HashJoin;
         int MergeJoin;
-        float8   buckets[NUMBUCKETS];
+        int   buckets[NUMBUCKETS];
         int freq[NUMBUCKETS];
 }mon_rec;
 
@@ -131,8 +132,8 @@ static mon_rec * create_histogram(mon_rec *entry);
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
 
-/* Bucket boundaries for the histogram in ms, from 5 ms to 15 minutes */
-float8 bucket_bounds[NUMBUCKETS] = {5, 10, 15, 30, 60, 120, 240, 480, 1000, 10000, 30000, 60000, 300000, 600000, 900000};
+/* Bucket boundaries for the histogram in ms, from 5 ms to 1 minute */
+float8 bucket_bounds[NUMBUCKETS] = {1, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100, 200, 300, 400, 500, 600, 700, 1000, 2000, 3000, 5000, 7000, 10000, 20000, 30000, 50000, 60000};
 /*
  * shmem_startup hook: allocate and attach to shared memory,
  */
@@ -536,6 +537,7 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
     const char *relname;
     int i;
     IndexScan *idx;
+    BitmapIndexScan *bidx;
     Scan *scan;
     RangeTblEntry *rte;
     Index relid;
@@ -554,13 +556,19 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         break;
                     case T_IndexScan:
                     case T_IndexOnlyScan:
-                    case T_BitmapIndexScan:
-                    case T_BitmapHeapScan:
                         idx = (IndexScan *)plan_node;
                         scan = &(idx->scan);
                         relname = get_rel_name(idx->indexid);
                         for (i = 0; strcmp(entry->index_scans[i].data, "") != 0; i++);
                         namestrcpy(&entry->index_scans[i], relname);
+                        break;
+                    case T_BitmapIndexScan:
+                    case T_BitmapHeapScan:
+                        bidx = (BitmapIndexScan *)plan_node;
+                        scan = &(bidx->scan);
+                        relname = get_rel_name(bidx->indexid);
+                        for (i = 0; strcmp(entry->bitmap_scans[i].data, "") != 0; i++);
+                        namestrcpy(&entry->bitmap_scans[i], relname);
                         break;
                     case T_FunctionScan:
                         namestrcpy(&entry->other_scan, "T_FunctionScan");
@@ -681,7 +689,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 {
                     Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
-                    int n, idx=0;
+                    int n, idx = 0;
                     for (n = 0; n < MAX_TABLES && strcmp(entry->seq_scans[n].data, "") != 0; n++)
                             numdatums[idx++] = NameGetDatum(&entry->seq_scans[n]);
                     arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
@@ -693,9 +701,21 @@ pg_mon(PG_FUNCTION_ARGS)
                 {
                     Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
-                    int n, idx=0;
+                    int n, idx = 0;
                     for (n = 0; n < MAX_TABLES && strcmp(entry->index_scans[n].data, "") != 0; n++)
                             numdatums[idx++] = NameGetDatum(&entry->index_scans[n]);
+                    arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
+                    values[i++] = PointerGetDatum(arry);
+                }
+                if (!entry->ModifyTable && strcmp(entry->bitmap_scans[0].data, "") == 0)
+                    nulls[i++] = true;
+                else
+                {
+                    Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
+                    ArrayType  *arry;
+                    int n, idx = 0;
+                    for (n = 0; n < MAX_TABLES && strcmp(entry->bitmap_scans[n].data, "") != 0; n++)
+                            numdatums[idx++] = NameGetDatum(&entry->bitmap_scans[n]);
                     arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
                     values[i++] = PointerGetDatum(arry);
                 }
@@ -710,9 +730,12 @@ pg_mon(PG_FUNCTION_ARGS)
                 {
                     Datum	   *numdatums = (Datum *) palloc(NUMBUCKETS * sizeof(Datum));
                     ArrayType  *arry;
-                    int n, idx=0;
-                    for (n = 0; n < NUMBUCKETS && entry->freq[n] > 0; n++)
+                    int n, idx = 0;
+                    for (n = 0; n < NUMBUCKETS; n++)
+                    {
+                        if (entry->freq[n] > 0)
                             numdatums[idx++] = Float8GetDatum(entry->buckets[n]);
+                    }
                     arry = construct_array(numdatums, idx, FLOAT8OID, sizeof(float8), true, 'd');
                     values[i++] = PointerGetDatum(arry);
                 }
@@ -723,9 +746,12 @@ pg_mon(PG_FUNCTION_ARGS)
                 {
                     Datum	   *numdatums = (Datum *) palloc(NUMBUCKETS * sizeof(Datum));
                     ArrayType  *arry;
-                    int n, idx=0;
-                    for (n = 0; n < NUMBUCKETS && entry->freq[n] > 0; n++)
+                    int n, idx = 0;
+                    for (n = 0; n < NUMBUCKETS; n++)
+                    {
+                        if (entry->freq[n] > 0)
                             numdatums[idx++] = Int8GetDatum(entry->freq[n]);
+                    }
                     arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }

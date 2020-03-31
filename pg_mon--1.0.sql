@@ -20,11 +20,12 @@ CREATE FUNCTION pg_mon(
     OUT update_query bool,
     OUT seq_scans name[],
     OUT index_scans name[],
+    OUT bitmap_scans name[],
     OUT other_scans name,
     OUT nested_loop_join_count int,
     OUT hash_join_count int,
     OUT merge_join_count int,
-    OUT hist_buckets_ubounds float8[],
+    OUT hist_buckets_ubounds int[],
     OUT hist_freq int[]
 )
 RETURNS SETOF record
@@ -44,6 +45,7 @@ COMMENT ON COLUMN pg_mon.is_parallel_query IS 'True if query is using any parall
 COMMENT ON COLUMN pg_mon.update_query IS 'True if this is update query';
 COMMENT ON COLUMN pg_mon.seq_scans IS 'List of relations using seq scan in the query';
 COMMENT ON COLUMN pg_mon.index_scans IS 'List of indexes used in the query';
+COMMENT ON COLUMN pg_mon.bitmap_scans IS 'List of bitmap index scans used in the query';
 COMMENT ON COLUMN pg_mon.other_scans IS 'Name of any other scan used in the query';
 COMMENT ON COLUMN pg_mon.nested_loop_join_count IS 'Count of nested loop joins in the query';
 COMMENT ON COLUMN pg_mon.hash_join_count IS 'Count of hash joins in the query';
