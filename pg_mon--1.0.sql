@@ -12,10 +12,8 @@ CREATE FUNCTION pg_mon(
     OUT queryid int8,
     OUT total_time float8,
     OUT first_tuple_time float8,
-    OUT expected_rows_current float8,
-    OUT expected_rows_lastrun float8,
-    OUT actual_rows_current float8,
-    OUT actual_rows_lastrun float8,
+    OUT expected_rows float8,
+    OUT actual_rows float8,
     OUT is_parallel_query bool,
     OUT update_query bool,
     OUT seq_scans name[],
@@ -25,8 +23,12 @@ CREATE FUNCTION pg_mon(
     OUT nested_loop_join_count int,
     OUT hash_join_count int,
     OUT merge_join_count int,
-    OUT hist_buckets_ubounds int[],
-    OUT hist_freq int[]
+    OUT hist_bucket_ubounds int[],
+    OUT hist_freq int[],
+    OUT hist_actual_rows_bucket_ubounds int[],
+    OUT hist_actual_rows_freq int[],
+    OUT hist_est_rows_bucket_ubounds int[],
+    OUT hist_est_rows_freq int[]
 )
 RETURNS SETOF record
 AS 'MODULE_PATHNAME'
@@ -37,10 +39,8 @@ CREATE VIEW pg_mon AS
 
 COMMENT ON COLUMN pg_mon.total_time IS 'Total time spent in query execution';
 COMMENT ON COLUMN pg_mon.first_tuple_time IS 'Time spent in the processing of first tuple only';
-COMMENT ON COLUMN pg_mon.expected_rows_current IS 'Expected number of rows in the current run';
-COMMENT ON COLUMN pg_mon.expected_rows_lastrun IS 'Expected number of rows in the last run';
-COMMENT ON COLUMN pg_mon.actual_rows_current IS 'Actual number of rows in the current run';
-COMMENT ON COLUMN pg_mon.actual_rows_lastrun IS 'Actual number of rows in the last run';
+COMMENT ON COLUMN pg_mon.expected_rows IS 'Expected number of rows in the current run';
+COMMENT ON COLUMN pg_mon.actual_rows IS 'Actual number of rows in the current run';
 COMMENT ON COLUMN pg_mon.is_parallel_query IS 'True if query is using any parallel operator';
 COMMENT ON COLUMN pg_mon.update_query IS 'True if this is update query';
 COMMENT ON COLUMN pg_mon.seq_scans IS 'List of relations using seq scan in the query';
@@ -50,8 +50,12 @@ COMMENT ON COLUMN pg_mon.other_scans IS 'Name of any other scan used in the quer
 COMMENT ON COLUMN pg_mon.nested_loop_join_count IS 'Count of nested loop joins in the query';
 COMMENT ON COLUMN pg_mon.hash_join_count IS 'Count of hash joins in the query';
 COMMENT ON COLUMN pg_mon.merge_join_count IS 'Count of merge joins in the query';
-COMMENT ON COLUMN pg_mon.hist_buckets_ubounds IS 'Upper bounds of the histogram buckets for query execution times';
+COMMENT ON COLUMN pg_mon.hist_bucket_ubounds IS 'Upper bounds of the histogram buckets for query execution times';
 COMMENT ON COLUMN pg_mon.hist_freq IS 'Frequency of the respective histogram buckets for query execution times';
+COMMENT ON COLUMN pg_mon.hist_actual_rows_bucket_ubounds IS 'Upper bounds of the histogram buckets for the number of actual rows';
+COMMENT ON COLUMN pg_mon.hist_actual_rows_freq IS 'Frequency of the respective histogram buckets for number of actual rows in query';
+COMMENT ON COLUMN pg_mon.hist_est_rows_bucket_ubounds IS 'Upper bounds of the histogram buckets for the number of estimated rows';
+COMMENT ON COLUMN pg_mon.hist_est_rows_freq IS 'Frequency of the respective histogram buckets for number of estimated rows in query';
 
 GRANT SELECT ON pg_mon TO PUBLIC;
 

@@ -63,10 +63,11 @@ static int	query_monitor_min_duration = 1000; /* set -1 for disable, in MS */
 static bool     query_monitor_timing = true;
 static bool     query_monitor_nested_statements = true;
 
-#define MON_COLS  18
+#define MON_COLS  20
 #define MON_HT_SIZE       1024
 
 #define NUMBUCKETS 30
+#define ROWNUMBUCKETS 20
 #define MAX_TABLES  50
 
 /*
@@ -78,9 +79,7 @@ typedef struct mon_rec
         double current_total_time;
         double first_tuple_time;
         double current_expected_rows;
-        double last_expected_rows;
         double current_actual_rows;
-        double last_actual_rows;
         bool is_parallel;
         bool ModifyTable;
         NameData seq_scans[MAX_TABLES];
@@ -90,8 +89,12 @@ typedef struct mon_rec
         int NestedLoopJoin ;
         int HashJoin;
         int MergeJoin;
-        int   buckets[NUMBUCKETS];
+        int buckets[NUMBUCKETS];
         int freq[NUMBUCKETS];
+        int actual_row_buckets[ROWNUMBUCKETS];
+        int actual_row_freq[ROWNUMBUCKETS];
+        int est_row_buckets[ROWNUMBUCKETS];
+        int est_row_freq[ROWNUMBUCKETS];
 }mon_rec;
 
 /* Current nesting depth of ExecutorRun calls */
@@ -106,6 +109,12 @@ LWLockId	mon_lock;
 #else
 LWLock	   *mon_lock;
 #endif
+
+typedef enum AddHist{
+            QUERY_TIME,
+            ACTUAL_ROWS,
+            EST_ROWS
+} AddHist;
 
 /* Saved hook values in case of unload */
 static ExecutorStart_hook_type prev_ExecutorStart = NULL;
@@ -127,13 +136,15 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void shmem_shutdown(int code, Datum arg);
 
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
-static mon_rec * create_histogram(mon_rec *entry);
+static mon_rec * create_histogram(mon_rec *entry, AddHist);
 
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
 
 /* Bucket boundaries for the histogram in ms, from 5 ms to 1 minute */
-float8 bucket_bounds[NUMBUCKETS] = {1, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100, 200, 300, 400, 500, 600, 700, 1000, 2000, 3000, 5000, 7000, 10000, 20000, 30000, 50000, 60000};
+int bucket_bounds[NUMBUCKETS] = {1, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100, 200, 300, 400, 500, 600, 700, 1000, 2000, 3000, 5000, 7000, 10000, 20000, 30000, 50000, 60000};
+
+int row_bucket_bounds[ROWNUMBUCKETS] = {10, 20, 30, 50, 100, 200, 300, 400, 500, 1000, 2000, 3000, 4000, 5000, 10000, 30000, 50000, 70000, 100000, 1000000};
 /*
  * shmem_startup hook: allocate and attach to shared memory,
  */
@@ -468,11 +479,10 @@ pgmon_plan_store(QueryDesc *queryDesc)
         temp_entry->MergeJoin = 0;
         temp_entry->NestedLoopJoin = 0;
         temp_entry->HashJoin = 0;
-        temp_entry->last_actual_rows = 0;
-        temp_entry->last_expected_rows = 0;
         namestrcpy(&temp_entry->other_scan, "");
 
         plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, temp_entry);
+
         temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
 
         /* Lookup the hash table entry and create one if not found. */
@@ -488,15 +498,20 @@ pgmon_plan_store(QueryDesc *queryDesc)
             for (i = 0; i < NUMBUCKETS; i++)
                 entry->buckets[i] = bucket_bounds[i];
 
+            for (i = 0; i < ROWNUMBUCKETS; i++)
+                entry->actual_row_buckets[i] = row_bucket_bounds[i];
+
+            for (i = 0; i < ROWNUMBUCKETS; i++)
+                entry->est_row_buckets[i] = row_bucket_bounds[i];
+
             memset(entry->freq, 0, NUMBUCKETS * sizeof(int));
-            LWLockRelease(mon_lock);
+            memset(entry->actual_row_freq, 0, ROWNUMBUCKETS * sizeof(int));
+            memset(entry->est_row_freq, 0, ROWNUMBUCKETS * sizeof(int));
         }
-        else
-        {
-            entry->last_expected_rows = entry->current_expected_rows;
-            entry->last_actual_rows = entry->current_actual_rows;
-            LWLockRelease(mon_lock);
-        }
+
+        entry = create_histogram(entry, EST_ROWS);
+        LWLockRelease(mon_lock);
+
         pfree(temp_entry);
 }
 
@@ -518,15 +533,11 @@ pgmon_exec_store(QueryDesc *queryDesc)
 
         entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
 
-        if (entry->current_total_time != 0)
-        {
-           entry->last_actual_rows = entry->current_actual_rows;
-        }
-
         entry->current_total_time = queryDesc->totaltime->total * 1000; //(time in seconds)
         entry->current_actual_rows = queryDesc->totaltime->ntuples;
 
-        entry = create_histogram(entry);
+        entry = create_histogram(entry, QUERY_TIME);
+        entry = create_histogram(entry, ACTUAL_ROWS);
 
         LWLockRelease(mon_lock);
 }
@@ -677,9 +688,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 values[i++] = Float8GetDatumFast(entry->current_total_time);
                 values[i++] = Float8GetDatumFast(entry->first_tuple_time);
                 values[i++] = Float8GetDatumFast(entry->current_expected_rows);
-                values[i++] = Float8GetDatumFast(entry->last_expected_rows);
                 values[i++] = Float8GetDatumFast(entry->current_actual_rows);
-                values[i++] = Float8GetDatumFast(entry->last_actual_rows);
                 values[i++] = BoolGetDatum(entry->is_parallel);
                 values[i++] = BoolGetDatum(entry->ModifyTable);
 
@@ -734,9 +743,9 @@ pg_mon(PG_FUNCTION_ARGS)
                     for (n = 0; n < NUMBUCKETS; n++)
                     {
                         if (entry->freq[n] > 0)
-                            numdatums[idx++] = Float8GetDatum(entry->buckets[n]);
+                            numdatums[idx++] = Int8GetDatum(entry->buckets[n]);
                     }
-                    arry = construct_array(numdatums, idx, FLOAT8OID, sizeof(float8), true, 'd');
+                    arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
 
@@ -751,6 +760,68 @@ pg_mon(PG_FUNCTION_ARGS)
                     {
                         if (entry->freq[n] > 0)
                             numdatums[idx++] = Int8GetDatum(entry->freq[n]);
+                    }
+                    arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
+                    values[i++] = PointerGetDatum(arry);
+                }
+                if(entry->actual_row_buckets == NULL)
+                    nulls[i++] = true;
+                else
+                {
+                    Datum	   *numdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
+                    ArrayType  *arry;
+                    int n, idx = 0;
+                    for (n = 0; n < ROWNUMBUCKETS; n++)
+                    {
+                        if (entry->actual_row_freq[n] > 0)
+                            numdatums[idx++] = Int8GetDatum(entry->actual_row_buckets[n]);
+                    }
+                    arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
+                    values[i++] = PointerGetDatum(arry);
+                }
+
+                if(entry->actual_row_freq == NULL)
+                    nulls[i++] = true;
+                else
+                {
+                    Datum	   *numdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
+                    ArrayType  *arry;
+                    int n, idx = 0;
+                    for (n = 0; n < ROWNUMBUCKETS; n++)
+                    {
+                        if (entry->actual_row_freq[n] > 0)
+                            numdatums[idx++] = Int8GetDatum(entry->actual_row_freq[n]);
+                    }
+                    arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
+                    values[i++] = PointerGetDatum(arry);
+                }
+                if(entry->est_row_buckets == NULL)
+                    nulls[i++] = true;
+                else
+                {
+                    Datum	   *numdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
+                    ArrayType  *arry;
+                    int n, idx = 0;
+                    for (n = 0; n < ROWNUMBUCKETS; n++)
+                    {
+                        if (entry->est_row_freq[n] > 0)
+                            numdatums[idx++] = Int8GetDatum(entry->est_row_buckets[n]);
+                    }
+                    arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
+                    values[i++] = PointerGetDatum(arry);
+                }
+
+                if(entry->est_row_freq == NULL)
+                    nulls[i++] = true;
+                else
+                {
+                    Datum	   *numdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
+                    ArrayType  *arry;
+                    int n, idx = 0;
+                    for (n = 0; n < ROWNUMBUCKETS; n++)
+                    {
+                        if (entry->est_row_freq[n] > 0)
+                            numdatums[idx++] = Int8GetDatum(entry->est_row_freq[n]);
                     }
                     arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
                     values[i++] = PointerGetDatum(arry);
@@ -798,27 +869,75 @@ pg_mon_reset(PG_FUNCTION_ARGS)
 }
 
 /* Create the histogram for the current query */
-static mon_rec * create_histogram(mon_rec *entry)
+static mon_rec * create_histogram(mon_rec *entry, AddHist value)
 {
     int i;
-    float8 val = entry->current_total_time;
-
-    /* if the last value of bucket is more than the current time, then increase the bucket boundary */
-    if (val > entry->buckets[NUMBUCKETS-1])
+    if (value == QUERY_TIME)
     {
-        entry->buckets[NUMBUCKETS-1] = val;
-        entry->freq[NUMBUCKETS-1]++;
-        return entry;
-    }
-
-    /* Find the matching bucket */
-    for (i = 0; i < NUMBUCKETS; i++)
-    {
-        if (val <= entry->buckets[i])
+        float8 val = entry->current_total_time;
+        /* if the last value of bucket is more than the current time, then increase the bucket boundary */
+        if (val > entry->buckets[NUMBUCKETS-1])
         {
-            entry->freq[i]++;
-            break;
+            entry->buckets[NUMBUCKETS-1] = val;
+            entry->freq[NUMBUCKETS-1]++;
+            return entry;
+        }
+
+        /* Find the matching bucket */
+        for (i = 0; i < NUMBUCKETS; i++)
+        {
+            if (val <= entry->buckets[i])
+            {
+                entry->freq[i]++;
+                break;
+            }
         }
     }
+
+    else if (value == ACTUAL_ROWS)
+    {
+        float8 val = entry->current_actual_rows;
+
+        /* if the last value of bucket is more than the current time, then increase the bucket boundary */
+        if (val > entry->actual_row_buckets[ROWNUMBUCKETS-1])
+        {
+            entry->actual_row_buckets[ROWNUMBUCKETS-1] = val;
+            entry->actual_row_freq[ROWNUMBUCKETS-1]++;
+            return entry;
+        }
+
+        /* Find the matching bucket */
+        for (i = 0; i < ROWNUMBUCKETS; i++)
+        {
+            if (val <= entry->actual_row_buckets[i])
+            {
+                entry->actual_row_freq[i]++;
+                break;
+            }
+        }
+    }
+    else if (value == EST_ROWS)
+    {
+        float8 val = entry->current_expected_rows;
+
+        /* if the last value of bucket is more than the current time, then increase the bucket boundary */
+        if (val > entry->est_row_buckets[ROWNUMBUCKETS-1])
+        {
+            entry->est_row_buckets[ROWNUMBUCKETS-1] = val;
+            entry->est_row_freq[ROWNUMBUCKETS-1]++;
+            return entry;
+        }
+
+        /* Find the matching bucket */
+        for (i = 0; i < ROWNUMBUCKETS; i++)
+        {
+            if (val <= entry->est_row_buckets[i])
+            {
+                entry->est_row_freq[i]++;
+                break;
+            }
+        }
+    }
+
     return entry;
 }
