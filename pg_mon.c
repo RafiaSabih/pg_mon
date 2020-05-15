@@ -733,7 +733,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 values[i++] = Int32GetDatum(entry->HashJoin);
                 values[i++] = Int32GetDatum(entry->MergeJoin);
 
-                if(entry->buckets == NULL)
+                if(!entry->buckets)
                     nulls[i++] = true;
                 else
                 {
@@ -749,7 +749,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     values[i++] = PointerGetDatum(arry);
                 }
 
-                if(entry->freq == NULL)
+                if(!entry->freq)
                     nulls[i++] = true;
                 else
                 {
@@ -764,7 +764,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
-                if(entry->actual_row_buckets == NULL)
+                if(!entry->actual_row_buckets)
                     nulls[i++] = true;
                 else
                 {
@@ -780,7 +780,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     values[i++] = PointerGetDatum(arry);
                 }
 
-                if(entry->actual_row_freq == NULL)
+                if(!entry->actual_row_freq)
                     nulls[i++] = true;
                 else
                 {
@@ -795,7 +795,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
-                if(entry->est_row_buckets == NULL)
+                if(!entry->est_row_buckets)
                     nulls[i++] = true;
                 else
                 {
@@ -811,7 +811,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     values[i++] = PointerGetDatum(arry);
                 }
 
-                if(entry->est_row_freq == NULL)
+                if(!entry->est_row_freq)
                     nulls[i++] = true;
                 else
                 {
@@ -848,9 +848,9 @@ pg_mon(PG_FUNCTION_ARGS)
 Datum
 pg_mon_reset(PG_FUNCTION_ARGS)
 {
+    int num_entries;
     HASH_SEQ_STATUS status;
     mon_rec *entry;
-    int num_entries;
 
     LWLockAcquire(mon_lock, LW_EXCLUSIVE);
     hash_seq_init(&status, mon_ht);
