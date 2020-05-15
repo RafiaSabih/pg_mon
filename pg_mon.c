@@ -677,9 +677,12 @@ pg_mon(PG_FUNCTION_ARGS)
         hash_seq_init(&status, mon_ht);
         while ((entry = hash_seq_search(&status)) != NULL)
         {
+                Datum	   *numdatums = (Datum *) palloc(NUMBUCKETS * sizeof(Datum));
+                Datum	   *rownumdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
                 Datum		values[MON_COLS];
                 bool		nulls[MON_COLS] = {0};
-                int			i = 0;
+                int			i = 0, n, idx = 0;
+                ArrayType  *arry = NULL;
 
                 memset(values, 0, sizeof(values));
                 memset(nulls, 0, sizeof(nulls));
@@ -733,99 +736,55 @@ pg_mon(PG_FUNCTION_ARGS)
                 values[i++] = Int32GetDatum(entry->HashJoin);
                 values[i++] = Int32GetDatum(entry->MergeJoin);
 
-                if(!entry->buckets)
-                    nulls[i++] = true;
-                else
+                for (n = 0; n < NUMBUCKETS; n++)
                 {
-                    Datum	   *numdatums = (Datum *) palloc(NUMBUCKETS * sizeof(Datum));
-                    ArrayType  *arry;
-                    int n, idx = 0;
-                    for (n = 0; n < NUMBUCKETS; n++)
-                    {
-                        if (entry->freq[n] > 0)
-                            numdatums[idx++] = Int8GetDatum(entry->buckets[n]);
-                    }
-                    arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
-                    values[i++] = PointerGetDatum(arry);
+                    if (entry->freq[n] > 0)
+                        numdatums[idx++] = Int8GetDatum(entry->buckets[n]);
                 }
+                arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
+                values[i++] = PointerGetDatum(arry);
 
-                if(!entry->freq)
-                    nulls[i++] = true;
-                else
+                for (n = 0, idx = 0; n < NUMBUCKETS; n++)
                 {
-                    Datum	   *numdatums = (Datum *) palloc(NUMBUCKETS * sizeof(Datum));
-                    ArrayType  *arry;
-                    int n, idx = 0;
-                    for (n = 0; n < NUMBUCKETS; n++)
-                    {
-                        if (entry->freq[n] > 0)
-                            numdatums[idx++] = Int8GetDatum(entry->freq[n]);
-                    }
-                    arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
-                    values[i++] = PointerGetDatum(arry);
+                    if (entry->freq[n] > 0)
+                        numdatums[idx++] = Int8GetDatum(entry->freq[n]);
                 }
-                if(!entry->actual_row_buckets)
-                    nulls[i++] = true;
-                else
-                {
-                    Datum	   *numdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
-                    ArrayType  *arry;
-                    int n, idx = 0;
-                    for (n = 0; n < ROWNUMBUCKETS; n++)
-                    {
-                        if (entry->actual_row_freq[n] > 0)
-                            numdatums[idx++] = Int8GetDatum(entry->actual_row_buckets[n]);
-                    }
-                    arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
-                    values[i++] = PointerGetDatum(arry);
-                }
+                arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
+                values[i++] = PointerGetDatum(arry);
+                numdatums = NULL;
+                arry = NULL;
 
-                if(!entry->actual_row_freq)
-                    nulls[i++] = true;
-                else
+                for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
                 {
-                    Datum	   *numdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
-                    ArrayType  *arry;
-                    int n, idx = 0;
-                    for (n = 0; n < ROWNUMBUCKETS; n++)
-                    {
-                        if (entry->actual_row_freq[n] > 0)
-                            numdatums[idx++] = Int8GetDatum(entry->actual_row_freq[n]);
-                    }
-                    arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
-                    values[i++] = PointerGetDatum(arry);
+                    if (entry->actual_row_freq[n] > 0)
+                        rownumdatums[idx++] = Int8GetDatum(entry->actual_row_buckets[n]);
                 }
-                if(!entry->est_row_buckets)
-                    nulls[i++] = true;
-                else
-                {
-                    Datum	   *numdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
-                    ArrayType  *arry;
-                    int n, idx = 0;
-                    for (n = 0; n < ROWNUMBUCKETS; n++)
-                    {
-                        if (entry->est_row_freq[n] > 0)
-                            numdatums[idx++] = Int8GetDatum(entry->est_row_buckets[n]);
-                    }
-                    arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
-                    values[i++] = PointerGetDatum(arry);
-                }
+                arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
+                values[i++] = PointerGetDatum(arry);
 
-                if(!entry->est_row_freq)
-                    nulls[i++] = true;
-                else
+                for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
                 {
-                    Datum	   *numdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
-                    ArrayType  *arry;
-                    int n, idx = 0;
-                    for (n = 0; n < ROWNUMBUCKETS; n++)
-                    {
-                        if (entry->est_row_freq[n] > 0)
-                            numdatums[idx++] = Int8GetDatum(entry->est_row_freq[n]);
-                    }
-                    arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
-                    values[i++] = PointerGetDatum(arry);
+                    if (entry->actual_row_freq[n] > 0)
+                        rownumdatums[idx++] = Int8GetDatum(entry->actual_row_freq[n]);
                 }
+                arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
+                values[i++] = PointerGetDatum(arry);
+
+                for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
+                {
+                    if (entry->est_row_freq[n] > 0)
+                        rownumdatums[idx++] = Int8GetDatum(entry->est_row_buckets[n]);
+                }
+                arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
+                values[i++] = PointerGetDatum(arry);
+
+                for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
+                {
+                    if (entry->est_row_freq[n] > 0)
+                        rownumdatums[idx++] = Int8GetDatum(entry->est_row_freq[n]);
+                }
+                arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
+                values[i++] = PointerGetDatum(arry);
 
                 tuplestore_putvalues(tupstore, tupdesc, values, nulls);
         }
