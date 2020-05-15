@@ -739,7 +739,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 for (n = 0; n < NUMBUCKETS; n++)
                 {
                     if (entry->freq[n] > 0)
-                        numdatums[idx++] = Int8GetDatum(entry->buckets[n]);
+                        numdatums[idx++] = Int32GetDatum(entry->buckets[n]);
                 }
                 arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
@@ -747,7 +747,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 for (n = 0, idx = 0; n < NUMBUCKETS; n++)
                 {
                     if (entry->freq[n] > 0)
-                        numdatums[idx++] = Int8GetDatum(entry->freq[n]);
+                        numdatums[idx++] = Int32GetDatum(entry->freq[n]);
                 }
                 arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
@@ -757,7 +757,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
                 {
                     if (entry->actual_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int8GetDatum(entry->actual_row_buckets[n]);
+                        rownumdatums[idx++] = Int32GetDatum(entry->actual_row_buckets[n]);
                 }
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
@@ -765,7 +765,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
                 {
                     if (entry->actual_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int8GetDatum(entry->actual_row_freq[n]);
+                        rownumdatums[idx++] = Int32GetDatum(entry->actual_row_freq[n]);
                 }
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
@@ -773,7 +773,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
                 {
                     if (entry->est_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int8GetDatum(entry->est_row_buckets[n]);
+                        rownumdatums[idx++] = Int32GetDatum(entry->est_row_buckets[n]);
                 }
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
@@ -781,7 +781,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
                 {
                     if (entry->est_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int8GetDatum(entry->est_row_freq[n]);
+                        rownumdatums[idx++] = Int32GetDatum(entry->est_row_freq[n]);
                 }
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
