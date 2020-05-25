@@ -9,37 +9,25 @@
  * -------------------------------------------------------------------------
  */
 #include <postgres.h>
-#include <ctype.h>
-#include <unistd.h>
-#include <math.h>
-#include <float.h>
-
 #include <limits.h>
-
 #include <miscadmin.h>
 #include "storage/lwlock.h"
 #include "storage/ipc.h"
 #include "storage/shmem.h"
-#if PG_VERSION_NUM >= 130000
-#include "common/hashfn.h"
-#endif
-#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 130000
-#include "utils/hashutils.h"
-#endif
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/tuplestore.h"
 #include "funcapi.h"
-
-#include "access/parallel.h"
 #include "commands/explain.h"
 #include "executor/instrument.h"
 #include "utils/guc.h"
 
 #include "nodes/plannodes.h"
 #if PG_VERSION_NUM >= 130000
+#include "common/hashfn.h"
 #include "catalog/pg_type_d.h"
 #else
+#include "utils/hashutils.h"
 #include "catalog/pg_type.h"
 #endif
 #include "mb/pg_wchar.h"
@@ -59,16 +47,16 @@ PG_FUNCTION_INFO_V1(pg_mon_reset);
 PG_MODULE_MAGIC;
 
 /* GUC variables */
-static int	query_monitor_min_duration = 1000; /* set -1 for disable, in MS */
-static bool     query_monitor_timing = true;
-static bool     query_monitor_nested_statements = true;
+static int	min_duration = 1000; /* set -1 for disable, in MS */
+static bool     timing = true;
+static bool     nested_statements = true;
 
 #define MON_COLS  20
 #define MON_HT_SIZE       1024
 
 #define NUMBUCKETS 30
 #define ROWNUMBUCKETS 20
-#define MAX_TABLES  50
+#define MAX_TABLES  30
 
 /*
  * Record for a query.
@@ -89,12 +77,12 @@ typedef struct mon_rec
         int NestedLoopJoin ;
         int HashJoin;
         int MergeJoin;
-        int buckets[NUMBUCKETS];
-        int freq[NUMBUCKETS];
-        int actual_row_buckets[ROWNUMBUCKETS];
-        int actual_row_freq[ROWNUMBUCKETS];
-        int est_row_buckets[ROWNUMBUCKETS];
-        int est_row_freq[ROWNUMBUCKETS];
+        int64 query_time_buckets[NUMBUCKETS];
+        int64 query_time_freq[NUMBUCKETS];
+        int64 actual_row_buckets[ROWNUMBUCKETS];
+        int64 actual_row_freq[ROWNUMBUCKETS];
+        int64 est_row_buckets[ROWNUMBUCKETS];
+        int64 est_row_freq[ROWNUMBUCKETS];
 }mon_rec;
 
 /* Current nesting depth of ExecutorRun calls */
@@ -175,19 +163,15 @@ shmem_startup(void)
         mon_ht = ShmemInitHash("mon_hash", MON_HT_SIZE, MON_HT_SIZE,
                                 &info, HASH_ELEM);
 #endif
-#if PG_VERSION_NUM < 90600
-        mon_lock = LWLockAssign();
-#else
-        mon_lock = &(GetNamedLWLockTranche("mon_lock"))->lock;
-#endif
-        LWLockRelease(AddinShmemInitLock);
+    mon_lock = &(GetNamedLWLockTranche("mon_lock"))->lock;
+    LWLockRelease(AddinShmemInitLock);
 
-        /*
-         * If we're in the postmaster (or a standalone backend...), set up a shmem
-         * exit hook to dump the statistics to disk.
-         */
-        if (!IsUnderPostmaster)
-                on_shmem_exit(shmem_shutdown, (Datum) 0);
+    /*
+        * If we're in the postmaster (or a standalone backend...), set up a shmem
+        * exit hook to dump the statistics to disk.
+        */
+    if (!IsUnderPostmaster)
+            on_shmem_exit(shmem_shutdown, (Datum) 0);
 }
 
 /*
@@ -221,11 +205,11 @@ void
 _PG_init(void)
 {
         /* Define custom GUC variables. */
-        DefineCustomIntVariable("query_monitor.min_duration",
+        DefineCustomIntVariable("pg_mon.min_duration",
                                                         "Sets the minimum execution time above which plans will be logged.",
                                                         "Zero prints all plans. -1 turns this feature off.",
-                                                        &query_monitor_min_duration,
-                                                        query_monitor_min_duration,
+                                                        &min_duration,
+                                                        min_duration,
                                                         -1, INT_MAX,
                                                         PGC_SUSET,
                                                         GUC_UNIT_MS,
@@ -233,22 +217,22 @@ _PG_init(void)
                                                         NULL,
                                                         NULL);
 
-        DefineCustomBoolVariable("query_monitor.nested_statements",
+        DefineCustomBoolVariable("pg_mon.nested_statements",
                                                          "Monitor nested statements.",
                                                          NULL,
-                                                         &query_monitor_nested_statements,
-                                                         query_monitor_nested_statements,
+                                                         &nested_statements,
+                                                         nested_statements,
                                                          PGC_SUSET,
                                                          0,
                                                          NULL,
                                                          NULL,
                                                          NULL);
 
-        DefineCustomBoolVariable("query_monitor.timing",
+        DefineCustomBoolVariable("pg_mon.timing",
                                                          "Collect timing data, not just row counts.",
                                                          NULL,
-                                                         &query_monitor_timing,
-                                                         query_monitor_timing,
+                                                         &timing,
+                                                         timing,
                                                          PGC_SUSET,
                                                          0,
                                                          NULL,
@@ -261,11 +245,7 @@ _PG_init(void)
          * resources in *_shmem_startup().
          */
         RequestAddinShmemSpace(qmon_memsize());
-#if PG_VERSION_NUM < 90600
-        RequestAddinLWLocks(1);
-#else
         RequestNamedLWLockTranche("mon_lock", 1);
-#endif
 
         /* Install Hooks */
         prev_shmem_startup_hook = shmem_startup_hook;
@@ -302,10 +282,10 @@ _PG_fini(void)
 static void
 explain_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-        if (query_monitor_min_duration >= 0)
+        if (min_duration >= 0)
         {
                 /* Enable per-node instrumentation iff log_analyze is required. */
-                if (query_monitor_timing)
+                if (timing)
                     queryDesc->instrument_options |= INSTRUMENT_TIMER;
                 else
                     queryDesc->instrument_options |= INSTRUMENT_ROWS;
@@ -316,7 +296,7 @@ explain_ExecutorStart(QueryDesc *queryDesc, int eflags)
         else
                 standard_ExecutorStart(queryDesc, eflags);
 
-        if (query_monitor_min_duration >= 0)
+        if (min_duration >= 0)
         {
             pgmon_plan_store(queryDesc);
                 /*
@@ -401,7 +381,7 @@ explain_ExecutorFinish(QueryDesc *queryDesc)
 static void
 explain_ExecutorEnd(QueryDesc *queryDesc)
 {
-        if (queryDesc->totaltime && query_monitor_min_duration >= 0)
+        if (queryDesc->totaltime && min_duration >= 0)
         {
                 double		msec;
 
@@ -413,7 +393,7 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 
                 /* Save query information if duration is exceeded. */
                 msec = queryDesc->totaltime->total * 1000;
-                if (msec >= query_monitor_min_duration)
+                if (msec >= min_duration)
                         pgmon_exec_store(queryDesc);
         }
 
@@ -496,7 +476,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
             /* Update the plan information for the entry*/
             *entry = *temp_entry;
             for (i = 0; i < NUMBUCKETS; i++)
-                entry->buckets[i] = bucket_bounds[i];
+                entry->query_time_buckets[i] = bucket_bounds[i];
 
             for (i = 0; i < ROWNUMBUCKETS; i++)
                 entry->actual_row_buckets[i] = row_bucket_bounds[i];
@@ -504,7 +484,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
             for (i = 0; i < ROWNUMBUCKETS; i++)
                 entry->est_row_buckets[i] = row_bucket_bounds[i];
 
-            memset(entry->freq, 0, NUMBUCKETS * sizeof(int));
+            memset(entry->query_time_freq, 0, NUMBUCKETS * sizeof(int));
             memset(entry->actual_row_freq, 0, ROWNUMBUCKETS * sizeof(int));
             memset(entry->est_row_freq, 0, ROWNUMBUCKETS * sizeof(int));
         }
@@ -562,7 +542,7 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         relid = scan->scanrelid;
                         rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
                         relname = get_rel_name(rte->relid);
-                        for (i = 0; strcmp(entry->seq_scans[i].data, "") != 0; i++);
+                        for (i = 0; i < MAX_TABLES && strcmp(entry->seq_scans[i].data, "") != 0; i++);
                         namestrcpy(&entry->seq_scans[i], relname);
                         break;
                     case T_IndexScan:
@@ -570,7 +550,7 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         idx = (IndexScan *)plan_node;
                         scan = &(idx->scan);
                         relname = get_rel_name(idx->indexid);
-                        for (i = 0; strcmp(entry->index_scans[i].data, "") != 0; i++);
+                        for (i = 0; i < MAX_TABLES && strcmp(entry->index_scans[i].data, "") != 0; i++);
                         namestrcpy(&entry->index_scans[i], relname);
                         break;
                     case T_BitmapIndexScan:
@@ -578,7 +558,7 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         bidx = (BitmapIndexScan *)plan_node;
                         scan = &(bidx->scan);
                         relname = get_rel_name(bidx->indexid);
-                        for (i = 0; strcmp(entry->bitmap_scans[i].data, "") != 0; i++);
+                        for (i = 0; i < MAX_TABLES && strcmp(entry->bitmap_scans[i].data, "") != 0; i++);
                         namestrcpy(&entry->bitmap_scans[i], relname);
                         break;
                     case T_FunctionScan:
@@ -738,16 +718,16 @@ pg_mon(PG_FUNCTION_ARGS)
 
                 for (n = 0; n < NUMBUCKETS; n++)
                 {
-                    if (entry->freq[n] > 0)
-                        numdatums[idx++] = Int32GetDatum(entry->buckets[n]);
+                    if (entry->query_time_freq[n] > 0)
+                        numdatums[idx++] = Int64GetDatum(entry->query_time_buckets[n]);
                 }
                 arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
 
                 for (n = 0, idx = 0; n < NUMBUCKETS; n++)
                 {
-                    if (entry->freq[n] > 0)
-                        numdatums[idx++] = Int32GetDatum(entry->freq[n]);
+                    if (entry->query_time_freq[n] > 0)
+                        numdatums[idx++] = Int64GetDatum(entry->query_time_freq[n]);
                 }
                 arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
@@ -757,7 +737,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
                 {
                     if (entry->actual_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int32GetDatum(entry->actual_row_buckets[n]);
+                        rownumdatums[idx++] = Int64GetDatum(entry->actual_row_buckets[n]);
                 }
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
@@ -765,7 +745,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
                 {
                     if (entry->actual_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int32GetDatum(entry->actual_row_freq[n]);
+                        rownumdatums[idx++] = Int64GetDatum(entry->actual_row_freq[n]);
                 }
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
@@ -773,7 +753,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
                 {
                     if (entry->est_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int32GetDatum(entry->est_row_buckets[n]);
+                        rownumdatums[idx++] = Int64GetDatum(entry->est_row_buckets[n]);
                 }
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
@@ -781,7 +761,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
                 {
                     if (entry->est_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int32GetDatum(entry->est_row_freq[n]);
+                        rownumdatums[idx++] = Int64GetDatum(entry->est_row_freq[n]);
                 }
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
@@ -835,19 +815,19 @@ static mon_rec * create_histogram(mon_rec *entry, AddHist value)
     {
         float8 val = entry->current_total_time;
         /* if the last value of bucket is more than the current time, then increase the bucket boundary */
-        if (val > entry->buckets[NUMBUCKETS-1])
+        if (val > entry->query_time_buckets[NUMBUCKETS-1])
         {
-            entry->buckets[NUMBUCKETS-1] = val;
-            entry->freq[NUMBUCKETS-1]++;
+            entry->query_time_buckets[NUMBUCKETS-1] = val;
+            entry->query_time_freq[NUMBUCKETS-1]++;
             return entry;
         }
 
         /* Find the matching bucket */
         for (i = 0; i < NUMBUCKETS; i++)
         {
-            if (val <= entry->buckets[i])
+            if (val <= entry->query_time_buckets[i])
             {
-                entry->freq[i]++;
+                entry->query_time_freq[i]++;
                 break;
             }
         }
