@@ -1,0 +1,40 @@
+postgres@jan-desktop:/etc$ pgbench -v -c 8 -T 30 -P 5 -b select-only
+starting vacuum...end.
+starting vacuum pgbench_accounts...end.
+progress: 5.0 s, 154693.6 tps, lat 0.049 ms stddev 0.010
+progress: 10.0 s, 156088.3 tps, lat 0.048 ms stddev 0.010
+progress: 15.0 s, 156855.7 tps, lat 0.048 ms stddev 0.011
+progress: 20.0 s, 154795.1 tps, lat 0.049 ms stddev 0.010
+progress: 25.0 s, 156452.2 tps, lat 0.048 ms stddev 0.009
+progress: 30.0 s, 157632.7 tps, lat 0.048 ms stddev 0.009
+transaction type: <builtin: select only>
+scaling factor: 100
+query mode: simple
+number of clients: 8
+number of threads: 1
+duration: 30 s
+number of transactions actually processed: 4682598
+latency average = 0.048 ms
+latency stddev = 0.010 ms
+tps = 156086.097065 (including connections establishing)
+tps = 156093.783773 (excluding connections establishing)
+postgres@jan-desktop:/etc$ pgbench -v -c 8 -T 30 -P 5 -b select-only
+starting vacuum...end.
+starting vacuum pgbench_accounts...end.
+progress: 5.0 s, 157364.0 tps, lat 0.048 ms stddev 0.009
+progress: 10.0 s, 152928.4 tps, lat 0.049 ms stddev 0.010
+progress: 15.0 s, 156152.0 tps, lat 0.048 ms stddev 0.009
+progress: 20.0 s, 158200.8 tps, lat 0.048 ms stddev 0.009
+progress: 25.0 s, 156743.2 tps, lat 0.048 ms stddev 0.009
+progress: 30.0 s, 155151.7 tps, lat 0.049 ms stddev 0.009
+transaction type: <builtin: select only>
+scaling factor: 100
+query mode: simple
+number of clients: 8
+number of threads: 1
+duration: 30 s
+number of transactions actually processed: 4682708
+latency average = 0.048 ms
+latency stddev = 0.009 ms
+tps = 156089.747455 (including connections establishing)
+tps = 156098.356768 (excluding connections establishing)

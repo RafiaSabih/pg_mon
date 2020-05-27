@@ -439,12 +439,12 @@ pgmon_save_firsttuple(QueryDesc *queryDesc)
 static void
 pgmon_plan_store(QueryDesc *queryDesc)
 {
+        Assert(queryDesc != NULL);
+
         mon_rec  *entry, *temp_entry;
         int64	queryId =  queryDesc->plannedstmt->queryId;
         bool    found = false;
         int i;
-
-        Assert(queryDesc!= NULL);
 
         /* Safety check... */
         if (!mon_ht)
@@ -466,10 +466,21 @@ pgmon_plan_store(QueryDesc *queryDesc)
         temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
 
         /* Lookup the hash table entry and create one if not found. */
-        LWLockAcquire(mon_lock, LW_EXCLUSIVE);
 
+        // TODO use double check, entry/found can be checked without lock
+        /*
+        entry=search...
+        if not entry
+          lock exclusive
+          entry = search ...
+          if not entry
+            create
+          release lock
+        */
+        LWLockAcquire(mon_lock, LW_EXCLUSIVE);
         entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
 
+        // TODO fix found
         /* Create new entry, if not present */
         if (!found)
         {
@@ -502,12 +513,13 @@ pgmon_exec_store(QueryDesc *queryDesc)
         int64	queryId = queryDesc->plannedstmt->queryId;
         bool    found = false;
 
-        Assert(queryDesc!= NULL);
+        Assert(queryDesc != NULL);
 
         /* Safety check... */
         if (!mon_ht)
                 return;
 
+        // TODO not clear why we lock here, dont create anything and dont check anything
         /* Lookup the hash table entry and create one if not found. */
         LWLockAcquire(mon_lock, LW_EXCLUSIVE);
 
@@ -522,6 +534,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
         LWLockRelease(mon_lock);
 }
 
+// TODO Future work unnest with stack? vs recursive call? compiler?
 static void
 plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
 {
@@ -787,7 +800,6 @@ pg_mon(PG_FUNCTION_ARGS)
 Datum
 pg_mon_reset(PG_FUNCTION_ARGS)
 {
-    int num_entries;
     HASH_SEQ_STATUS status;
     mon_rec *entry;
 
@@ -797,11 +809,6 @@ pg_mon_reset(PG_FUNCTION_ARGS)
     {
         hash_search(mon_ht, &entry->queryid, HASH_REMOVE, NULL);
     }
-
-    /* ensure everything is deleted */
-    num_entries = hash_get_num_entries(mon_ht);
-    Assert(num_entries == 0);
-
     LWLockRelease(mon_lock);
 
     PG_RETURN_VOID();
@@ -832,7 +839,6 @@ static mon_rec * create_histogram(mon_rec *entry, AddHist value)
             }
         }
     }
-
     else if (value == ACTUAL_ROWS)
     {
         float8 val = entry->current_actual_rows;
