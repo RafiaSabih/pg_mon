@@ -47,7 +47,7 @@ PG_FUNCTION_INFO_V1(pg_mon_reset);
 PG_MODULE_MAGIC;
 
 /* GUC variables */
-static int	min_duration = 1000; /* set -1 for disable, in MS */
+static int	min_duration = 0; /* set -1 for disable, in milliseconds */
 static bool     timing = true;
 static bool     nested_statements = true;
 
@@ -130,9 +130,18 @@ static mon_rec * create_histogram(mon_rec *entry, AddHist);
 static HTAB *mon_ht;
 
 /* Bucket boundaries for the histogram in ms, from 5 ms to 1 minute */
-int bucket_bounds[NUMBUCKETS] = {1, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100, 200, 300, 400, 500, 600, 700, 1000, 2000, 3000, 5000, 7000, 10000, 20000, 30000, 50000, 60000};
+int bucket_bounds[NUMBUCKETS] = {
+                                1, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80,
+                                90, 100, 200, 300, 400, 500, 600, 700, 1000,
+                                2000, 3000, 5000, 7000, 10000, 20000, 30000,
+                                50000, 60000
+                                };
 
-int row_bucket_bounds[ROWNUMBUCKETS] = {1, 5, 10, 50, 100, 200, 300, 400, 500, 1000, 2000, 3000, 4000, 5000, 10000, 30000, 50000, 70000, 100000, 1000000};
+int row_bucket_bounds[ROWNUMBUCKETS] = {
+                                        1, 5, 10, 50, 100, 200, 300, 400, 500,
+                                        1000, 2000, 3000, 4000, 5000, 10000,
+                                        30000, 50000, 70000, 100000, 1000000
+                                        };
 /*
  * shmem_startup hook: allocate and attach to shared memory,
  */
@@ -439,56 +448,48 @@ pgmon_save_firsttuple(QueryDesc *queryDesc)
 static void
 pgmon_plan_store(QueryDesc *queryDesc)
 {
+        Assert(queryDesc != NULL);
+
         mon_rec  *entry, *temp_entry;
         int64	queryId =  queryDesc->plannedstmt->queryId;
         bool    found = false;
         int i;
-
-        Assert(queryDesc!= NULL);
 
         /* Safety check... */
         if (!mon_ht)
                 return;
 
         /* Keep a temporary record to store the plan information of current query */
-        temp_entry = (mon_rec *) palloc(sizeof(mon_rec));
-        memset(&temp_entry->queryid, 0 , sizeof(mon_rec));
+        temp_entry = (mon_rec *) palloc0(sizeof(mon_rec));
         temp_entry->queryid = queryId;
-        temp_entry->ModifyTable = false;
-        temp_entry->is_parallel = false;
-        temp_entry->MergeJoin = 0;
-        temp_entry->NestedLoopJoin = 0;
-        temp_entry->HashJoin = 0;
-        namestrcpy(&temp_entry->other_scan, "");
 
         plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, temp_entry);
 
         temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
 
-        /* Lookup the hash table entry and create one if not found. */
-        LWLockAcquire(mon_lock, LW_EXCLUSIVE);
-
+        /* Lookup the hash table entry with only shared mode  */
+        LWLockAcquire(mon_lock, LW_SHARED);
         entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
+        LWLockRelease(mon_lock);
 
         /* Create new entry, if not present */
-        if (!found)
+        if (!entry)
         {
-            /* Update the plan information for the entry*/
-            *entry = *temp_entry;
+            /* Update the plan information for the entry */
             for (i = 0; i < NUMBUCKETS; i++)
-                entry->query_time_buckets[i] = bucket_bounds[i];
+                temp_entry->query_time_buckets[i] = bucket_bounds[i];
 
             for (i = 0; i < ROWNUMBUCKETS; i++)
-                entry->actual_row_buckets[i] = row_bucket_bounds[i];
-
-            for (i = 0; i < ROWNUMBUCKETS; i++)
-                entry->est_row_buckets[i] = row_bucket_bounds[i];
-
-            memset(entry->query_time_freq, 0, NUMBUCKETS * sizeof(int));
-            memset(entry->actual_row_freq, 0, ROWNUMBUCKETS * sizeof(int));
-            memset(entry->est_row_freq, 0, ROWNUMBUCKETS * sizeof(int));
+            {
+                temp_entry->actual_row_buckets[i] = row_bucket_bounds[i];
+                temp_entry->est_row_buckets[i] = row_bucket_bounds[i];
+            }
         }
 
+        /* Finally lock in exclusive mode to add/update the entry in hash table */
+        LWLockAcquire(mon_lock, LW_EXCLUSIVE);
+        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
+        *entry = *temp_entry;
         entry = create_histogram(entry, EST_ROWS);
         LWLockRelease(mon_lock);
 
@@ -508,12 +509,14 @@ pgmon_exec_store(QueryDesc *queryDesc)
         if (!mon_ht)
                 return;
 
-        /* Lookup the hash table entry and create one if not found. */
+        /*
+            Find the required hash table entry, the entry should definitely be
+            there as it must be created in pgmon_plan_store.
+        */
         LWLockAcquire(mon_lock, LW_EXCLUSIVE);
-
         entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
 
-        entry->current_total_time = queryDesc->totaltime->total * 1000; //(time in seconds)
+        entry->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
         entry->current_actual_rows = queryDesc->totaltime->ntuples;
 
         entry = create_histogram(entry, QUERY_TIME);
