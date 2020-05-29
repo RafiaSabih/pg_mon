@@ -17,13 +17,13 @@ How to install the extension
 
 1. Run make and make install in the pg_mon folder
 2. Add pg_mon to shared_preload_libraries
-3. Run 'create extension pg_mon; ' in client
+3. Run 'create extension pg_mon;' in client
 
 How to use the extension
 
 - anytime you may view the contents of the view using 'select * from pg_mon; '
 - Some configuration parameters related to the extension are,
-  - pg_mon.timing - boolean to set if we want to monitor also the execution
+  - pg_mon.enable_timing - boolean to set if we want to monitor also the execution
                      time of the queries. Default value is true. Note that
                      monitoring queries for execution time is likely to have
                      some execution overheads.
@@ -40,6 +40,10 @@ How to use the extension
                             still be there. With this parameter one can only
                             control what to save in the respective view.
 
+  - pg_mon.plan_info_immediate - boolean guc to set if plan time information should
+                                 be made available immediately after planning phase.
+                                 By default this is set to false. There might be
+                                 locking overhead incurred by setting this to true.
   - pg_mon.nested_statements - boolean guc to set if monitor also the nested
                                  statement. Default value is set to true.
                                  This is particularly useful when monitoring
@@ -52,20 +56,19 @@ Important information available via the extension
 - join information - The view also contains columns for each of the three
                        join methods, and value in them shows the total number
                        of joins of the corresponding type in the query.
-- query time histogram - timing of all the runs of a query are summarised in a
-                          histogram. This is serial based equi-depth histogram.
-                          this information is available via two columns of the view,
+- query time histogram - timing of all the runs of a query are summarized in a
+                          histogram. This is split between two columns,
   - buckets - This contains the upper bound of the buckets, since this is
                 serial histogram lower bound can be taken as the end of the
                 pervious bucket.
   - frequencies - This contains the corresponding frequencies of the buckets.
 
     In the current version, the number of histogram buckets is fixed to twenty.
-    Also the upper bounds of the buckets is fixed to the follwoing,
+    Also the upper bounds of the buckets is fixed to the following,
     {1, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100, 200, 300, 400, 500,
     600, 700, 1000, 2000, 3000, 5000, 7000, 10000, 20000, 30000, 50000, 60000}
 
     Similarly, the histograms for the actual and estimated number of rows is
-    also present in the view. The upper bounds for the bucekts in these
+    also present in the view. The upper bounds for the buckets in these
     histograms are, {1, 5, 10, 50, 100, 200, 300, 400, 500, 1000, 2000, 3000,
                     4000, 5000, 10000, 30000, 50000, 70000, 100000, 1000000}.

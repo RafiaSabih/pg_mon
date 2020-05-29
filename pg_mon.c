@@ -47,13 +47,13 @@ PG_FUNCTION_INFO_V1(pg_mon_reset);
 PG_MODULE_MAGIC;
 
 /* GUC variables */
-static int	min_duration = 0; /* set -1 for disable, in milliseconds */
-static bool     timing = true;
-static bool     nested_statements = true;
+static int	CONFIG_MIN_DURATION = 0; /* set -1 for disable, in milliseconds */
+static bool CONFIG_TIMING_ENABLED = true;
+static bool CONFIG_PLAN_INFO_IMMEDIATE = false;
+static bool CONFIG_TRACK_NESTED_STATEMENTS = true;
 
 #define MON_COLS  20
 #define MON_HT_SIZE       1024
-
 #define NUMBUCKETS 30
 #define ROWNUMBUCKETS 20
 #define MAX_TABLES  30
@@ -92,11 +92,7 @@ extern void _PG_init(void);
 extern void _PG_fini(void);
 
 /* LWlock to mange the reading and writing the hash table. */
-#if PG_VERSION_NUM < 90400
-LWLockId	mon_lock;
-#else
 LWLock	   *mon_lock;
-#endif
 
 typedef enum AddHist{
             QUERY_TIME,
@@ -110,12 +106,11 @@ static ExecutorRun_hook_type prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
 static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
 
-static void explain_ExecutorStart(QueryDesc *queryDesc, int eflags);
-static void explain_ExecutorRun(QueryDesc *queryDesc,
-                                                                ScanDirection direction,
-                                                                uint64 count, bool execute_once);
-static void explain_ExecutorFinish(QueryDesc *queryDesc);
-static void explain_ExecutorEnd(QueryDesc *queryDesc);
+static void pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags);
+static void pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
+                                uint64 count, bool execute_once);
+static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
+static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
 static void pgmon_exec_store(QueryDesc *queryDesc);
 static void pgmon_save_firsttuple(QueryDesc *queryDesc);
@@ -130,18 +125,24 @@ static mon_rec * create_histogram(mon_rec *entry, AddHist);
 static HTAB *mon_ht;
 
 /* Bucket boundaries for the histogram in ms, from 5 ms to 1 minute */
-int bucket_bounds[NUMBUCKETS] = {
+static int bucket_bounds[NUMBUCKETS] = {
                                 1, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80,
                                 90, 100, 200, 300, 400, 500, 600, 700, 1000,
                                 2000, 3000, 5000, 7000, 10000, 20000, 30000,
                                 50000, 60000
                                 };
 
-int row_bucket_bounds[ROWNUMBUCKETS] = {
+static int row_bucket_bounds[ROWNUMBUCKETS] = {
                                         1, 5, 10, 50, 100, 200, 300, 400, 500,
                                         1000, 2000, 3000, 4000, 5000, 10000,
                                         30000, 50000, 70000, 100000, 1000000
                                         };
+
+/*
+ * Keep a temporary record to store the plan information of the
+ * current query
+ */
+static mon_rec *temp_entry;
 /*
  * shmem_startup hook: allocate and attach to shared memory,
  */
@@ -217,8 +218,8 @@ _PG_init(void)
         DefineCustomIntVariable("pg_mon.min_duration",
                                                         "Sets the minimum execution time above which plans will be logged.",
                                                         "Zero prints all plans. -1 turns this feature off.",
-                                                        &min_duration,
-                                                        min_duration,
+                                                        &CONFIG_MIN_DURATION,
+                                                        CONFIG_MIN_DURATION,
                                                         -1, INT_MAX,
                                                         PGC_SUSET,
                                                         GUC_UNIT_MS,
@@ -229,25 +230,34 @@ _PG_init(void)
         DefineCustomBoolVariable("pg_mon.nested_statements",
                                                          "Monitor nested statements.",
                                                          NULL,
-                                                         &nested_statements,
-                                                         nested_statements,
+                                                         &CONFIG_TRACK_NESTED_STATEMENTS,
+                                                         CONFIG_TRACK_NESTED_STATEMENTS,
                                                          PGC_SUSET,
                                                          0,
                                                          NULL,
                                                          NULL,
                                                          NULL);
 
-        DefineCustomBoolVariable("pg_mon.timing",
+        DefineCustomBoolVariable("pg_mon.timing_enabled",
                                                          "Collect timing data, not just row counts.",
                                                          NULL,
-                                                         &timing,
-                                                         timing,
+                                                         &CONFIG_TIMING_ENABLED,
+                                                         CONFIG_TIMING_ENABLED,
                                                          PGC_SUSET,
                                                          0,
                                                          NULL,
                                                          NULL,
                                                          NULL);
-
+        DefineCustomBoolVariable("pg_mon.plan_info_immediate",
+                                                             "Populate the plan time information immediately after planning phase.",
+                                                              NULL,
+                                                         &CONFIG_PLAN_INFO_IMMEDIATE,
+                                                         CONFIG_PLAN_INFO_IMMEDIATE,
+                                                         PGC_SUSET,
+                                                         0,
+                                                         NULL,
+                                                         NULL,
+                                                         NULL);
         /*
          * Request additional shared resources.  (These are no-ops if we're not in
          * the postmaster process.)  We'll allocate or attach to the shared
@@ -260,13 +270,13 @@ _PG_init(void)
         prev_shmem_startup_hook = shmem_startup_hook;
         shmem_startup_hook = shmem_startup;
         prev_ExecutorStart = ExecutorStart_hook;
-        ExecutorStart_hook = explain_ExecutorStart;
+        ExecutorStart_hook = pgmon_ExecutorStart;
         prev_ExecutorRun = ExecutorRun_hook;
-        ExecutorRun_hook = explain_ExecutorRun;
+        ExecutorRun_hook = pgmon_ExecutorRun;
         prev_ExecutorFinish = ExecutorFinish_hook;
-        ExecutorFinish_hook = explain_ExecutorFinish;
+        ExecutorFinish_hook = pgmon_ExecutorFinish;
         prev_ExecutorEnd = ExecutorEnd_hook;
-        ExecutorEnd_hook = explain_ExecutorEnd;
+        ExecutorEnd_hook = pgmon_ExecutorEnd;
 }
 
 /*
@@ -289,15 +299,18 @@ _PG_fini(void)
  * ExecutorStart hook: start up logging if needed
  */
 static void
-explain_ExecutorStart(QueryDesc *queryDesc, int eflags)
+pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-        if (min_duration >= 0)
+        temp_entry = (mon_rec * ) palloc0(sizeof(mon_rec));
+
+        if (CONFIG_TIMING_ENABLED)
         {
-                /* Enable per-node instrumentation iff log_analyze is required. */
-                if (timing)
-                    queryDesc->instrument_options |= INSTRUMENT_TIMER;
-                else
-                    queryDesc->instrument_options |= INSTRUMENT_ROWS;
+                queryDesc->instrument_options |= INSTRUMENT_TIMER;
+                queryDesc->instrument_options |= INSTRUMENT_ROWS;
+        }
+        else
+        {
+                queryDesc->instrument_options |= INSTRUMENT_ROWS;
         }
 
         if (prev_ExecutorStart)
@@ -305,22 +318,19 @@ explain_ExecutorStart(QueryDesc *queryDesc, int eflags)
         else
                 standard_ExecutorStart(queryDesc, eflags);
 
-        if (min_duration >= 0)
+        pgmon_plan_store(queryDesc);
+        /*
+            * Set up to track total elapsed time in ExecutorRun.  Make sure the
+            * space is allocated in the per-query context so it will go away at
+            * ExecutorEnd.
+            */
+        if (queryDesc->totaltime == NULL)
         {
-            pgmon_plan_store(queryDesc);
-                /*
-                 * Set up to track total elapsed time in ExecutorRun.  Make sure the
-                 * space is allocated in the per-query context so it will go away at
-                 * ExecutorEnd.
-                 */
-                if (queryDesc->totaltime == NULL)
-                {
-                        MemoryContext oldcxt;
+                MemoryContext oldcxt;
 
-                        oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
-                        queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
-                        MemoryContextSwitchTo(oldcxt);
-                }
+                oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
+                queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
+                MemoryContextSwitchTo(oldcxt);
         }
 }
 
@@ -328,7 +338,7 @@ explain_ExecutorStart(QueryDesc *queryDesc, int eflags)
  * ExecutorRun hook: all we need do is track nesting depth
  */
 static void
-explain_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
+pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
                                         uint64 count, bool execute_once)
 {
         nesting_level++;
@@ -358,10 +368,11 @@ explain_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
  * ExecutorFinish hook: all we need do is track nesting depth
  */
 static void
-explain_ExecutorFinish(QueryDesc *queryDesc)
+pgmon_ExecutorFinish(QueryDesc *queryDesc)
 {
         nesting_level++;
         pgmon_save_firsttuple(queryDesc);
+
         PG_TRY();
         {
                 if (prev_ExecutorFinish)
@@ -388,9 +399,9 @@ explain_ExecutorFinish(QueryDesc *queryDesc)
  * ExecutorEnd hook: log results if needed
  */
 static void
-explain_ExecutorEnd(QueryDesc *queryDesc)
+pgmon_ExecutorEnd(QueryDesc *queryDesc)
 {
-        if (queryDesc->totaltime && min_duration >= 0)
+        if (queryDesc->totaltime && CONFIG_TIMING_ENABLED)
         {
                 double		msec;
 
@@ -402,7 +413,7 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 
                 /* Save query information if duration is exceeded. */
                 msec = queryDesc->totaltime->total * 1000;
-                if (msec >= min_duration)
+                if (msec >= CONFIG_MIN_DURATION)
                         pgmon_exec_store(queryDesc);
         }
 
@@ -412,88 +423,55 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
                 standard_ExecutorEnd(queryDesc);
 }
 
-/* Save the time taken by processing of first tuple */
+/* Save the time taken by processing of first tuple fix!! store locally to update in the pgmon_exec_store, save locking*/
 static void
 pgmon_save_firsttuple(QueryDesc *queryDesc)
 {
-    mon_rec  *entry;
-    int64	queryId =  queryDesc->plannedstmt->queryId;
-    bool    found = false;
-
-    Assert(queryDesc!= NULL);
-
-    /* Safety check... */
-    if (!mon_ht)
-            return;
-
-    /* Lookup the hash table entry and create one if not found. */
-    LWLockAcquire(mon_lock, LW_EXCLUSIVE);
-
-    entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
-
-     /* Save the first tuple time for the entry */
-    if (found)
-    {
-        entry->first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
-        LWLockRelease(mon_lock);
-    }
-    else
-    {
-        LWLockRelease(mon_lock);
-        return;
-    }
-
+    temp_entry->first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
 }
 
 static void
 pgmon_plan_store(QueryDesc *queryDesc)
 {
-        Assert(queryDesc != NULL);
-
-        mon_rec  *entry, *temp_entry;
-        int64	queryId =  queryDesc->plannedstmt->queryId;
-        bool    found = false;
-        int i;
+       int i;
+       mon_rec  *entry;
 
         /* Safety check... */
         if (!mon_ht)
                 return;
 
-        /* Keep a temporary record to store the plan information of current query */
-        temp_entry = (mon_rec *) palloc0(sizeof(mon_rec));
-        temp_entry->queryid = queryId;
+        Assert(queryDesc != NULL);
+
+        temp_entry->queryid = queryDesc->plannedstmt->queryId;;
 
         plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, temp_entry);
 
         temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
 
-        /* Lookup the hash table entry with only shared mode  */
-        LWLockAcquire(mon_lock, LW_SHARED);
-        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
-        LWLockRelease(mon_lock);
+        /* Update the plan information for the entry */
+        for (i = 0; i < NUMBUCKETS; i++)
+            temp_entry->query_time_buckets[i] = bucket_bounds[i];
 
-        /* Create new entry, if not present */
-        if (!entry)
+        for (i = 0; i < ROWNUMBUCKETS; i++)
         {
-            /* Update the plan information for the entry */
-            for (i = 0; i < NUMBUCKETS; i++)
-                temp_entry->query_time_buckets[i] = bucket_bounds[i];
-
-            for (i = 0; i < ROWNUMBUCKETS; i++)
-            {
-                temp_entry->actual_row_buckets[i] = row_bucket_bounds[i];
-                temp_entry->est_row_buckets[i] = row_bucket_bounds[i];
-            }
+            temp_entry->actual_row_buckets[i] = row_bucket_bounds[i];
+            temp_entry->est_row_buckets[i] = row_bucket_bounds[i];
         }
 
-        /* Finally lock in exclusive mode to add/update the entry in hash table */
-        LWLockAcquire(mon_lock, LW_EXCLUSIVE);
-        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
-        *entry = *temp_entry;
-        entry = create_histogram(entry, EST_ROWS);
-        LWLockRelease(mon_lock);
+        /*
+         * If plan information is to be provided immediately, then take the
+         * lock here to update the information in hash table.
+         */
+        if (CONFIG_PLAN_INFO_IMMEDIATE)
+        {
+            LWLockAcquire(mon_lock, LW_EXCLUSIVE);
+            entry = (mon_rec *) hash_search(mon_ht, &temp_entry->queryid,
+                                            HASH_ENTER_NULL, NULL);
+           *entry = *temp_entry;
 
-        pfree(temp_entry);
+            entry = create_histogram(entry, EST_ROWS);
+            LWLockRelease(mon_lock);
+        }
 }
 
 static void
@@ -501,7 +479,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
 {
         mon_rec  *entry;
         int64	queryId = queryDesc->plannedstmt->queryId;
-        bool    found = false;
+        bool found = false;
 
         Assert(queryDesc!= NULL);
 
@@ -510,19 +488,31 @@ pgmon_exec_store(QueryDesc *queryDesc)
                 return;
 
         /*
-            Find the required hash table entry, the entry should definitely be
-            there as it must be created in pgmon_plan_store.
-        */
+         * Find the required hash table entry if not found then copy the
+         * contents of temp_entry otherwise only update the histograms and copy
+         * the statistics related to current execution of the query.
+         */
         LWLockAcquire(mon_lock, LW_EXCLUSIVE);
         entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
+        if (!found)
+            *entry = *temp_entry;
 
         entry->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
         entry->current_actual_rows = queryDesc->totaltime->ntuples;
-
+        entry->first_tuple_time = temp_entry->first_tuple_time;
         entry = create_histogram(entry, QUERY_TIME);
         entry = create_histogram(entry, ACTUAL_ROWS);
 
+        /*
+         * If planning info is not already updated then only update
+         * estimated rows histogram.
+         */
+        if (!CONFIG_PLAN_INFO_IMMEDIATE)
+            entry = create_histogram(entry, EST_ROWS);
+
         LWLockRelease(mon_lock);
+
+        pfree(temp_entry);
 }
 
 static void
@@ -545,7 +535,9 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         relid = scan->scanrelid;
                         rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
                         relname = get_rel_name(rte->relid);
-                        for (i = 0; i < MAX_TABLES && strcmp(entry->seq_scans[i].data, "") != 0; i++);
+                        for (i = 0; i < MAX_TABLES &&
+                                    strcmp(entry->seq_scans[i].data, "") != 0;
+                                    i++);
                         namestrcpy(&entry->seq_scans[i], relname);
                         break;
                     case T_IndexScan:
@@ -553,7 +545,9 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         idx = (IndexScan *)plan_node;
                         scan = &(idx->scan);
                         relname = get_rel_name(idx->indexid);
-                        for (i = 0; i < MAX_TABLES && strcmp(entry->index_scans[i].data, "") != 0; i++);
+                        for (i = 0; i < MAX_TABLES &&
+                                    strcmp(entry->index_scans[i].data, "") != 0;
+                                    i++);
                         namestrcpy(&entry->index_scans[i], relname);
                         break;
                     case T_BitmapIndexScan:
@@ -561,7 +555,9 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         bidx = (BitmapIndexScan *)plan_node;
                         scan = &(bidx->scan);
                         relname = get_rel_name(bidx->indexid);
-                        for (i = 0; i < MAX_TABLES && strcmp(entry->bitmap_scans[i].data, "") != 0; i++);
+                        for (i = 0; i < MAX_TABLES &&
+                                    strcmp(entry->bitmap_scans[i].data, "") != 0;
+                                    i++);
                         namestrcpy(&entry->bitmap_scans[i], relname);
                         break;
                     case T_FunctionScan:
@@ -790,7 +786,6 @@ pg_mon(PG_FUNCTION_ARGS)
 Datum
 pg_mon_reset(PG_FUNCTION_ARGS)
 {
-    int num_entries;
     HASH_SEQ_STATUS status;
     mon_rec *entry;
 
@@ -800,10 +795,6 @@ pg_mon_reset(PG_FUNCTION_ARGS)
     {
         hash_search(mon_ht, &entry->queryid, HASH_REMOVE, NULL);
     }
-
-    /* ensure everything is deleted */
-    num_entries = hash_get_num_entries(mon_ht);
-    Assert(num_entries == 0);
 
     LWLockRelease(mon_lock);
 
@@ -817,7 +808,10 @@ static mon_rec * create_histogram(mon_rec *entry, AddHist value)
     if (value == QUERY_TIME)
     {
         float8 val = entry->current_total_time;
-        /* if the last value of bucket is more than the current time, then increase the bucket boundary */
+        /*
+         * if the last value of bucket is more than the current time,
+         * then increase the bucket boundary.
+         */
         if (val > entry->query_time_buckets[NUMBUCKETS-1])
         {
             entry->query_time_buckets[NUMBUCKETS-1] = val;
@@ -840,7 +834,10 @@ static mon_rec * create_histogram(mon_rec *entry, AddHist value)
     {
         float8 val = entry->current_actual_rows;
 
-        /* if the last value of bucket is more than the current time, then increase the bucket boundary */
+        /*
+         * if the last value of bucket is more than the current time,
+         * then increase the bucket boundary.
+         */
         if (val > entry->actual_row_buckets[ROWNUMBUCKETS-1])
         {
             entry->actual_row_buckets[ROWNUMBUCKETS-1] = val;
@@ -862,7 +859,10 @@ static mon_rec * create_histogram(mon_rec *entry, AddHist value)
     {
         float8 val = entry->current_expected_rows;
 
-        /* if the last value of bucket is more than the current time, then increase the bucket boundary */
+        /*
+         * if the last value of bucket is more than the current time,
+         * then increase the bucket boundary
+         */
         if (val > entry->est_row_buckets[ROWNUMBUCKETS-1])
         {
             entry->est_row_buckets[ROWNUMBUCKETS-1] = val;
