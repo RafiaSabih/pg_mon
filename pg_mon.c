@@ -660,7 +660,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 Datum	   *rownumdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
                 Datum		values[MON_COLS];
                 bool		nulls[MON_COLS] = {0};
-                int			i = 0, n, idx = 0;
+                int			i = 0, n, idx = 0, last_fill_bucket = 0;
                 ArrayType  *arry = NULL;
 
                 memset(values, 0, sizeof(values));
@@ -715,52 +715,73 @@ pg_mon(PG_FUNCTION_ARGS)
                 values[i++] = Int32GetDatum(entry->HashJoin);
                 values[i++] = Int32GetDatum(entry->MergeJoin);
 
-                for (n = 0; n < NUMBUCKETS; n++)
+                for (n = NUMBUCKETS-1; n >= 0; n--)
                 {
                     if (entry->query_time_freq[n] > 0)
-                        numdatums[idx++] = Int64GetDatum(entry->query_time_buckets[n]);
+                    {
+                        last_fill_bucket = n;
+                        break;
+                    }
+                }
+                for (n = 0; n <= last_fill_bucket; n++)
+                {
+                    numdatums[idx++] = Int64GetDatum(entry->query_time_buckets[n]);
                 }
                 arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
 
-                for (n = 0, idx = 0; n < NUMBUCKETS; n++)
+                for (n = 0, idx = 0; n <= last_fill_bucket; n++)
                 {
-                    if (entry->query_time_freq[n] > 0)
-                        numdatums[idx++] = Int64GetDatum(entry->query_time_freq[n]);
+                     numdatums[idx++] = Int64GetDatum(entry->query_time_freq[n]);
                 }
                 arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
                 numdatums = NULL;
                 arry = NULL;
+                last_fill_bucket = 0;
 
-                for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
+                for (n = ROWNUMBUCKETS-1; n >= 0; n--)
                 {
                     if (entry->actual_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int64GetDatum(entry->actual_row_buckets[n]);
+                    {
+                        last_fill_bucket = n;
+                        break;
+                    }
                 }
-                arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
-                values[i++] = PointerGetDatum(arry);
 
-                for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
+                for (n = 0, idx = 0; n <= last_fill_bucket; n++)
                 {
-                    if (entry->actual_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int64GetDatum(entry->actual_row_freq[n]);
+                    rownumdatums[idx++] = Int64GetDatum(entry->actual_row_buckets[n]);
                 }
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
 
-                for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
+                for (n = 0, idx = 0; n <= last_fill_bucket; n++)
+                {
+                    rownumdatums[idx++] = Int64GetDatum(entry->actual_row_freq[n]);
+                }
+                arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
+                values[i++] = PointerGetDatum(arry);
+                last_fill_bucket = 0;
+
+                for (n = ROWNUMBUCKETS-1; n >= 0; n--)
                 {
                     if (entry->est_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int64GetDatum(entry->est_row_buckets[n]);
+                    {
+                        last_fill_bucket = n;
+                        break;
+                    }
+                }
+                for (n = 0, idx = 0; n <= last_fill_bucket; n++)
+                {
+                    rownumdatums[idx++] = Int64GetDatum(entry->est_row_buckets[n]);
                 }
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
 
-                for (n = 0, idx = 0; n < ROWNUMBUCKETS; n++)
+                for (n = 0, idx = 0; n <= last_fill_bucket; n++)
                 {
-                    if (entry->est_row_freq[n] > 0)
-                        rownumdatums[idx++] = Int64GetDatum(entry->est_row_freq[n]);
+                    rownumdatums[idx++] = Int64GetDatum(entry->est_row_freq[n]);
                 }
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
                 values[i++] = PointerGetDatum(arry);
