@@ -36,6 +36,7 @@
 #include "utils/builtins.h"
 #include "nodes/plannodes.h"
 #include "parser/parsetree.h"
+#include "storage/spin.h"
 
 
 Datum		pg_mon(PG_FUNCTION_ARGS);
@@ -83,6 +84,7 @@ typedef struct mon_rec
         int64 actual_row_freq[ROWNUMBUCKETS];
         int64 est_row_buckets[ROWNUMBUCKETS];
         int64 est_row_freq[ROWNUMBUCKETS];
+        slock_t		mutex;
 }mon_rec;
 
 /* Current nesting depth of ExecutorRun calls */
@@ -173,10 +175,10 @@ shmem_startup(void)
         mon_ht = ShmemInitHash("mon_hash", MON_HT_SIZE, MON_HT_SIZE,
                                 &info, HASH_ELEM);
 #endif
-    mon_lock = &(GetNamedLWLockTranche("mon_lock"))->lock;
-    LWLockRelease(AddinShmemInitLock);
+        mon_lock = &(GetNamedLWLockTranche("mon_lock"))->lock;
+        LWLockRelease(AddinShmemInitLock);
 
-    /*
+        /*
         * If we're in the postmaster (or a standalone backend...), set up a shmem
         * exit hook to dump the statistics to disk.
         */
@@ -495,23 +497,32 @@ pgmon_exec_store(QueryDesc *queryDesc)
         LWLockAcquire(mon_lock, LW_EXCLUSIVE);
         entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
         if (!found)
+        {
             *entry = *temp_entry;
+            SpinLockInit(&entry->mutex);
+        }
 
-        entry->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
-        entry->current_actual_rows = queryDesc->totaltime->ntuples;
-        entry->first_tuple_time = temp_entry->first_tuple_time;
-        entry = create_histogram(entry, QUERY_TIME);
-        entry = create_histogram(entry, ACTUAL_ROWS);
+        LWLockRelease(mon_lock);
+        LWLockAcquire(mon_lock, LW_SHARED);
+
+        volatile mon_rec *e = (volatile mon_rec *) entry;
+        SpinLockAcquire(&e->mutex);
+
+        e->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
+        e->current_actual_rows = queryDesc->totaltime->ntuples;
+        e->first_tuple_time = temp_entry->first_tuple_time;
+        e = create_histogram(e, QUERY_TIME);
+        e = create_histogram(e, ACTUAL_ROWS);
 
         /*
          * If planning info is not already updated then only update
          * estimated rows histogram.
          */
         if (!CONFIG_PLAN_INFO_IMMEDIATE)
-            entry = create_histogram(entry, EST_ROWS);
+            e = create_histogram(e, EST_ROWS);
 
+        SpinLockRelease(&e->mutex);
         LWLockRelease(mon_lock);
-
         pfree(temp_entry);
 }
 
