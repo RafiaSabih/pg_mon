@@ -144,7 +144,8 @@ static int row_bucket_bounds[ROWNUMBUCKETS] = {
  * Keep a temporary record to store the plan information of the
  * current query
  */
-static mon_rec *temp_entry;
+static mon_rec *temp_entry = NULL;
+static MemoryContext oldcontext = NULL;
 /*
  * shmem_startup hook: allocate and attach to shared memory,
  */
@@ -303,7 +304,9 @@ _PG_fini(void)
 static void
 pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-        temp_entry = (mon_rec * ) palloc0(sizeof(mon_rec));
+        oldcontext = CurrentMemoryContext;
+        if (!temp_entry)
+            temp_entry = (mon_rec * ) palloc0(sizeof(mon_rec));
 
         if (CONFIG_TIMING_ENABLED)
         {
@@ -405,18 +408,15 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 {
         if (queryDesc->totaltime && CONFIG_TIMING_ENABLED)
         {
-                double		msec;
-
                 /*
                  * Make sure stats accumulation is done.  (Note: it's okay if several
                  * levels of hook all do this.)
                  */
                 InstrEndLoop(queryDesc->totaltime);
 
-                /* Save query information if duration is exceeded. */
-                msec = queryDesc->totaltime->total * 1000;
-                if (msec >= CONFIG_MIN_DURATION)
-                        pgmon_exec_store(queryDesc);
+                /* Save query information */
+                if (temp_entry)
+                    pgmon_exec_store(queryDesc);
         }
 
         if (prev_ExecutorEnd)
@@ -429,7 +429,8 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 static void
 pgmon_save_firsttuple(QueryDesc *queryDesc)
 {
-    temp_entry->first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
+    if (temp_entry)
+        temp_entry->first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
 }
 
 static void
@@ -480,8 +481,10 @@ static void
 pgmon_exec_store(QueryDesc *queryDesc)
 {
         mon_rec  *entry;
+        volatile mon_rec *e;
         int64	queryId = queryDesc->plannedstmt->queryId;
         bool found = false;
+        MemoryContext current = CurrentMemoryContext;
 
         Assert(queryDesc!= NULL);
 
@@ -505,7 +508,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
         LWLockRelease(mon_lock);
         LWLockAcquire(mon_lock, LW_SHARED);
 
-        volatile mon_rec *e = (volatile mon_rec *) entry;
+        e = (volatile mon_rec *) entry;
         SpinLockAcquire(&e->mutex);
 
         e->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
@@ -523,7 +526,11 @@ pgmon_exec_store(QueryDesc *queryDesc)
 
         SpinLockRelease(&e->mutex);
         LWLockRelease(mon_lock);
+        MemoryContextSwitchTo(oldcontext);
         pfree(temp_entry);
+        temp_entry = NULL;
+        MemoryContextSwitchTo(current);
+
 }
 
 static void
