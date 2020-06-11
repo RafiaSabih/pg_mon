@@ -115,7 +115,7 @@ static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
 static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
 static void pgmon_exec_store(QueryDesc *queryDesc);
-static void pgmon_save_firsttuple(QueryDesc *queryDesc);
+
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void shmem_shutdown(int code, Datum arg);
@@ -304,31 +304,16 @@ _PG_fini(void)
 static void
 pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-        oldcontext = CurrentMemoryContext;
-        if (!temp_entry)
-            temp_entry = (mon_rec * ) palloc0(sizeof(mon_rec));
-
-        if (CONFIG_TIMING_ENABLED)
-        {
-                queryDesc->instrument_options |= INSTRUMENT_TIMER;
-                queryDesc->instrument_options |= INSTRUMENT_ROWS;
-        }
-        else
-        {
-                queryDesc->instrument_options |= INSTRUMENT_ROWS;
-        }
-
-        if (prev_ExecutorStart)
+    if (prev_ExecutorStart)
                 prev_ExecutorStart(queryDesc, eflags);
         else
                 standard_ExecutorStart(queryDesc, eflags);
 
-        pgmon_plan_store(queryDesc);
         /*
-            * Set up to track total elapsed time in ExecutorRun.  Make sure the
-            * space is allocated in the per-query context so it will go away at
-            * ExecutorEnd.
-            */
+        * Set up to track total elapsed time in ExecutorRun.  Make sure the
+        * space is allocated in the per-query context so it will go away at
+        * ExecutorEnd.
+        */
         if (queryDesc->totaltime == NULL)
         {
                 MemoryContext oldcxt;
@@ -337,6 +322,13 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
                 queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
                 MemoryContextSwitchTo(oldcxt);
         }
+
+        oldcontext = CurrentMemoryContext;
+
+        if (!temp_entry)
+            temp_entry = (mon_rec * ) palloc0(sizeof(mon_rec));
+
+        pgmon_plan_store(queryDesc);
 }
 
 /*
@@ -376,7 +368,6 @@ static void
 pgmon_ExecutorFinish(QueryDesc *queryDesc)
 {
         nesting_level++;
-        pgmon_save_firsttuple(queryDesc);
 
         PG_TRY();
         {
@@ -423,14 +414,6 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
                 prev_ExecutorEnd(queryDesc);
         else
                 standard_ExecutorEnd(queryDesc);
-}
-
-/* Save the time taken by processing of first tuple fix!! store locally to update in the pgmon_exec_store, save locking*/
-static void
-pgmon_save_firsttuple(QueryDesc *queryDesc)
-{
-    if (temp_entry)
-        temp_entry->first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
 }
 
 static void
@@ -513,7 +496,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
 
         e->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
         e->current_actual_rows = queryDesc->totaltime->ntuples;
-        e->first_tuple_time = temp_entry->first_tuple_time;
+        e->first_tuple_time = queryDesc->totaltime->firsttuple;
         e = create_histogram(e, QUERY_TIME);
         e = create_histogram(e, ACTUAL_ROWS);
 
