@@ -48,9 +48,7 @@ PG_FUNCTION_INFO_V1(pg_mon_reset);
 PG_MODULE_MAGIC;
 
 /* GUC variables */
-static bool CONFIG_TIMING_ENABLED = true;
 static bool CONFIG_PLAN_INFO_IMMEDIATE = false;
-static bool CONFIG_TRACK_NESTED_STATEMENTS = true;
 
 #define MON_COLS  20
 #define MON_HT_SIZE       1024
@@ -216,27 +214,6 @@ qmon_memsize(void)
 void
 _PG_init(void)
 {
-        DefineCustomBoolVariable("pg_mon.nested_statements",
-                                                         "Monitor nested statements.",
-                                                         NULL,
-                                                         &CONFIG_TRACK_NESTED_STATEMENTS,
-                                                         CONFIG_TRACK_NESTED_STATEMENTS,
-                                                         PGC_SUSET,
-                                                         0,
-                                                         NULL,
-                                                         NULL,
-                                                         NULL);
-
-        DefineCustomBoolVariable("pg_mon.timing_enabled",
-                                                         "Collect timing data, not just row counts.",
-                                                         NULL,
-                                                         &CONFIG_TIMING_ENABLED,
-                                                         CONFIG_TIMING_ENABLED,
-                                                         PGC_SUSET,
-                                                         0,
-                                                         NULL,
-                                                         NULL,
-                                                         NULL);
         DefineCustomBoolVariable("pg_mon.plan_info_immediate",
                                                              "Populate the plan time information immediately after planning phase.",
                                                               NULL,
@@ -296,17 +273,16 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
                 standard_ExecutorStart(queryDesc, eflags);
 
         /*
-        * Set up to track total elapsed time in ExecutorRun.  Make sure the
-        * space is allocated in the per-query context so it will go away at
-        * ExecutorEnd.
+        * Set up to track total elapsed time in ExecutorRun.Make sure the space
+        * is allocated in the per-query context so it will go away at ExecutorEnd.
         */
-        if (queryDesc->totaltime == NULL)
+        if(queryDesc->totaltime == NULL)
         {
-                MemoryContext oldcxt;
+            MemoryContext oldcxt;
 
-                oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
-                queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
-                MemoryContextSwitchTo(oldcxt);
+            oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
+            queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
+            MemoryContextSwitchTo(oldcxt);
         }
         if (queryDesc->planstate->instrument == NULL)
         {
@@ -316,6 +292,7 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
             MemoryContextSwitchTo(oldcxt);
         }
 
+        queryDesc->instrument_options |= INSTRUMENT_ROWS;
         oldcontext = CurrentMemoryContext;
 
         if (!temp_entry)
@@ -360,7 +337,7 @@ pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
 static void
 pgmon_ExecutorFinish(QueryDesc *queryDesc)
 {
-    if (CONFIG_TIMING_ENABLED && queryDesc->planstate->instrument)
+    if (queryDesc->planstate->instrument)
     {
        temp_entry->first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
     }
@@ -394,18 +371,17 @@ pgmon_ExecutorFinish(QueryDesc *queryDesc)
 static void
 pgmon_ExecutorEnd(QueryDesc *queryDesc)
 {
-        if (queryDesc->totaltime && CONFIG_TIMING_ENABLED)
+        if (queryDesc->totaltime)
         {
                 /*
-                 * Make sure stats accumulation is done.  (Note: it's okay if several
-                 * levels of hook all do this.)
+                 * Make sure stats accumulation is done.
+                 * (Note: it's okay if several levels of hook all do this.)
                  */
                 InstrEndLoop(queryDesc->totaltime);
-
-                /* Save query information */
-                if (temp_entry)
-                    pgmon_exec_store(queryDesc);
         }
+        /* Save query information */
+        if (temp_entry)
+            pgmon_exec_store(queryDesc);
 
         if (prev_ExecutorEnd)
                 prev_ExecutorEnd(queryDesc);
@@ -492,9 +468,9 @@ pgmon_exec_store(QueryDesc *queryDesc)
         SpinLockAcquire(&e->mutex);
 
         e->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
-        e->current_actual_rows = queryDesc->totaltime->ntuples;
         e->first_tuple_time = temp_entry->first_tuple_time;
         e = create_histogram(e, QUERY_TIME);
+        e->current_actual_rows = queryDesc->totaltime->ntuples;
         e = create_histogram(e, ACTUAL_ROWS);
 
         /*
