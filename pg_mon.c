@@ -322,6 +322,13 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
                 queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
                 MemoryContextSwitchTo(oldcxt);
         }
+        if (queryDesc->planstate->instrument == NULL)
+        {
+            MemoryContext oldcxt;
+            oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
+            queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL);
+            MemoryContextSwitchTo(oldcxt);
+        }
 
         oldcontext = CurrentMemoryContext;
 
@@ -367,6 +374,10 @@ pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
 static void
 pgmon_ExecutorFinish(QueryDesc *queryDesc)
 {
+    if (CONFIG_TIMING_ENABLED && queryDesc->planstate->instrument)
+    {
+       temp_entry->first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
+    }
         nesting_level++;
 
         PG_TRY();
@@ -496,7 +507,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
 
         e->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
         e->current_actual_rows = queryDesc->totaltime->ntuples;
-        e->first_tuple_time = queryDesc->totaltime->firsttuple;
+        e->first_tuple_time = temp_entry->first_tuple_time;
         e = create_histogram(e, QUERY_TIME);
         e = create_histogram(e, ACTUAL_ROWS);
 
