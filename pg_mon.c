@@ -48,7 +48,6 @@ PG_FUNCTION_INFO_V1(pg_mon_reset);
 PG_MODULE_MAGIC;
 
 /* GUC variables */
-static int	CONFIG_MIN_DURATION = 0; /* set -1 for disable, in milliseconds */
 static bool CONFIG_TIMING_ENABLED = true;
 static bool CONFIG_PLAN_INFO_IMMEDIATE = false;
 static bool CONFIG_TRACK_NESTED_STATEMENTS = true;
@@ -217,19 +216,6 @@ qmon_memsize(void)
 void
 _PG_init(void)
 {
-        /* Define custom GUC variables. */
-        DefineCustomIntVariable("pg_mon.min_duration",
-                                                        "Sets the minimum execution time above which plans will be logged.",
-                                                        "Zero prints all plans. -1 turns this feature off.",
-                                                        &CONFIG_MIN_DURATION,
-                                                        CONFIG_MIN_DURATION,
-                                                        -1, INT_MAX,
-                                                        PGC_SUSET,
-                                                        GUC_UNIT_MS,
-                                                        NULL,
-                                                        NULL,
-                                                        NULL);
-
         DefineCustomBoolVariable("pg_mon.nested_statements",
                                                          "Monitor nested statements.",
                                                          NULL,
