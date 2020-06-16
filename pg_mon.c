@@ -337,7 +337,7 @@ pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
 static void
 pgmon_ExecutorFinish(QueryDesc *queryDesc)
 {
-    if (queryDesc->planstate->instrument)
+    if (temp_entry && queryDesc->planstate->instrument)
     {
        temp_entry->first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
     }
@@ -453,16 +453,21 @@ pgmon_exec_store(QueryDesc *queryDesc)
          * contents of temp_entry otherwise only update the histograms and copy
          * the statistics related to current execution of the query.
          */
-        LWLockAcquire(mon_lock, LW_EXCLUSIVE);
-        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
-        if (!found)
-        {
-            *entry = *temp_entry;
-            SpinLockInit(&entry->mutex);
-        }
-
-        LWLockRelease(mon_lock);
         LWLockAcquire(mon_lock, LW_SHARED);
+        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, NULL);
+        if (!entry)
+        {
+            LWLockRelease(mon_lock);
+            LWLockAcquire(mon_lock, LW_EXCLUSIVE);
+            entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
+
+            /* Double check to ensure the entry is infact new */
+            if (!found)
+            {
+                *entry = *temp_entry;
+                SpinLockInit(&entry->mutex);
+            }
+        }
 
         e = (volatile mon_rec *) entry;
         SpinLockAcquire(&e->mutex);
@@ -486,7 +491,6 @@ pgmon_exec_store(QueryDesc *queryDesc)
         pfree(temp_entry);
         temp_entry = NULL;
         MemoryContextSwitchTo(current);
-
 }
 
 static void
