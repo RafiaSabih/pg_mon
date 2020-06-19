@@ -439,7 +439,8 @@ pgmon_exec_store(QueryDesc *queryDesc)
         mon_rec  *entry;
         volatile mon_rec *e;
         int64	queryId = queryDesc->plannedstmt->queryId;
-        bool found = false;
+        bool found = false, already_there = false;
+        int i, j;
         MemoryContext current = CurrentMemoryContext;
 
         Assert(queryDesc!= NULL);
@@ -484,6 +485,66 @@ pgmon_exec_store(QueryDesc *queryDesc)
          */
         if (!CONFIG_PLAN_INFO_IMMEDIATE)
             e = create_histogram(e, EST_ROWS);
+
+        /*
+         * If this query is already present in the hash table, then update the
+         * plan information of the query also. If the seq_scans, indexes, etc.
+         * used by the query are different from the previous view then add
+         * them to the entry here.
+         * However, if the number of seq_scans or index_scans has reached
+         * more than MAX_TABLES, then silently exit without adding.
+         */
+        if (found)
+        {
+            for (j = 0; j < MAX_TABLES && temp_entry->seq_scans[j] != 0; j++)
+            {
+                for (i = 0; i < MAX_TABLES && entry->seq_scans[i] > 0; i++)
+                {
+                    if (temp_entry->seq_scans[j] == entry->seq_scans[i])
+                    {
+                        already_there = true;
+                    }
+                }
+                if (!already_there && i < MAX_TABLES)
+                {
+                    entry->seq_scans[i] = temp_entry->seq_scans[j];
+                }
+                already_there = false;
+            }
+            for (j = 0; j < MAX_TABLES && temp_entry->index_scans[j] != 0; j++)
+            {
+                for (i = 0; i < MAX_TABLES && entry->index_scans[i] > 0; i++)
+                {
+                    if (temp_entry->index_scans[j] == entry->index_scans[i])
+                    {
+                        already_there = true;
+                    }
+                }
+                if (!already_there && i < MAX_TABLES)
+                {
+                    entry->index_scans[i] = temp_entry->index_scans[j];
+                }
+                already_there = false;
+            }
+            for (j = 0; j < MAX_TABLES && temp_entry->bitmap_scans[j] != 0; j++)
+            {
+                for (i = 0; i < MAX_TABLES && entry->bitmap_scans[i] > 0; i++)
+                {
+                    if (temp_entry->bitmap_scans[j] == entry->bitmap_scans[i])
+                    {
+                        already_there = true;
+                    }
+                }
+                if (!already_there && i < MAX_TABLES)
+                {
+                    entry->bitmap_scans[i] = temp_entry->bitmap_scans[j];
+                }
+                already_there = false;
+            }
+            entry->NestedLoopJoin = temp_entry->NestedLoopJoin;
+            entry->HashJoin = temp_entry->HashJoin;
+            entry->MergeJoin = temp_entry->MergeJoin;
+        }
 
         SpinLockRelease(&e->mutex);
         LWLockRelease(mon_lock);
