@@ -68,9 +68,9 @@ typedef struct mon_rec
         double current_actual_rows;
         bool is_parallel;
         bool ModifyTable;
-        NameData seq_scans[MAX_TABLES];
-        NameData index_scans[MAX_TABLES];
-        NameData bitmap_scans[MAX_TABLES];
+        Oid seq_scans[MAX_TABLES];
+        Oid index_scans[MAX_TABLES];
+        Oid bitmap_scans[MAX_TABLES];
         NameData other_scan;
         int NestedLoopJoin ;
         int HashJoin;
@@ -496,8 +496,8 @@ pgmon_exec_store(QueryDesc *queryDesc)
 static void
 plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
 {
-    const char *relname;
     int i;
+    bool found = false;
     IndexScan *idx;
     BitmapIndexScan *bidx;
     Scan *scan;
@@ -512,31 +512,51 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         scan = (Scan *)plan_node;
                         relid = scan->scanrelid;
                         rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
-                        relname = get_rel_name(rte->relid);
-                        for (i = 0; i < MAX_TABLES &&
-                                    strcmp(entry->seq_scans[i].data, "") != 0;
-                                    i++);
-                        namestrcpy(&entry->seq_scans[i], relname);
+                        for (i = 0; i < MAX_TABLES && entry->seq_scans[i] > 0;
+                             i++)
+                        {
+                            if (entry->seq_scans[i] == rte->relid)
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found && i < MAX_TABLES)
+                            entry->seq_scans[i] = rte->relid;
                         break;
                     case T_IndexScan:
                     case T_IndexOnlyScan:
                         idx = (IndexScan *)plan_node;
                         scan = &(idx->scan);
-                        relname = get_rel_name(idx->indexid);
                         for (i = 0; i < MAX_TABLES &&
-                                    strcmp(entry->index_scans[i].data, "") != 0;
+                                    entry->index_scans[i] > 0;
                                     i++);
-                        namestrcpy(&entry->index_scans[i], relname);
+                        {
+                            if (entry->index_scans[i] == idx->indexid)
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found && i < MAX_TABLES)
+                            entry->index_scans[i] = idx->indexid;
                         break;
                     case T_BitmapIndexScan:
                     case T_BitmapHeapScan:
                         bidx = (BitmapIndexScan *)plan_node;
                         scan = &(bidx->scan);
-                        relname = get_rel_name(bidx->indexid);
                         for (i = 0; i < MAX_TABLES &&
-                                    strcmp(entry->bitmap_scans[i].data, "") != 0;
-                                    i++);
-                        namestrcpy(&entry->bitmap_scans[i], relname);
+                                    entry->bitmap_scans[i] > 0;
+                                    i++)
+                        {
+                            if (entry->bitmap_scans[i] == bidx->indexid)
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found && i < MAX_TABLES)
+                            entry->bitmap_scans[i] = bidx->indexid;
                         break;
                     case T_FunctionScan:
                         namestrcpy(&entry->other_scan, "T_FunctionScan");
@@ -652,40 +672,40 @@ pg_mon(PG_FUNCTION_ARGS)
                 values[i++] = BoolGetDatum(entry->is_parallel);
                 values[i++] = BoolGetDatum(entry->ModifyTable);
 
-                if (!entry->ModifyTable && strcmp(entry->seq_scans[0].data, "") == 0)
+                if (!entry->ModifyTable && entry->seq_scans[0] == 0)
                     nulls[i++] = true;
                 else
                 {
                     Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
                     int n, idx = 0;
-                    for (n = 0; n < MAX_TABLES && strcmp(entry->seq_scans[n].data, "") != 0; n++)
-                            numdatums[idx++] = NameGetDatum(&entry->seq_scans[n]);
-                    arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
+                    for (n = 0; n < MAX_TABLES && entry->seq_scans[n] != 0; n++)
+                            numdatums[idx++] = ObjectIdGetDatum(&entry->seq_scans[n]);
+                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), false, 'c');
                     values[i++] = PointerGetDatum(arry);
                 }
-                if (!entry->ModifyTable && strcmp(entry->index_scans[0].data, "") == 0)
+                if (!entry->ModifyTable && entry->index_scans[0] == 0)
                     nulls[i++] = true;
                 else
                 {
                     Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
                     int n, idx = 0;
-                    for (n = 0; n < MAX_TABLES && strcmp(entry->index_scans[n].data, "") != 0; n++)
-                            numdatums[idx++] = NameGetDatum(&entry->index_scans[n]);
-                    arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
+                    for (n = 0; n < MAX_TABLES && entry->index_scans[n] != 0; n++)
+                            numdatums[idx++] = ObjectIdGetDatum(&entry->index_scans[n]);
+                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), false, 'c');
                     values[i++] = PointerGetDatum(arry);
                 }
-                if (!entry->ModifyTable && strcmp(entry->bitmap_scans[0].data, "") == 0)
+                if (!entry->ModifyTable && entry->bitmap_scans[0] == 0)
                     nulls[i++] = true;
                 else
                 {
                     Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
                     int n, idx = 0;
-                    for (n = 0; n < MAX_TABLES && strcmp(entry->bitmap_scans[n].data, "") != 0; n++)
-                            numdatums[idx++] = NameGetDatum(&entry->bitmap_scans[n]);
-                    arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
+                    for (n = 0; n < MAX_TABLES && entry->bitmap_scans[n] != 0; n++)
+                            numdatums[idx++] = ObjectIdGetDatum(&entry->bitmap_scans[n]);
+                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), false, 'c');
                     values[i++] = PointerGetDatum(arry);
                 }
                 values[i++] = NameGetDatum(&entry->other_scan);
