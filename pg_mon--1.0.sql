@@ -16,9 +16,9 @@ CREATE FUNCTION pg_mon(
     OUT actual_rows float8,
     OUT is_parallel_query bool,
     OUT update_query bool,
-    OUT seq_scans name[],
-    OUT index_scans name[],
-    OUT bitmap_scans name[],
+    OUT seq_scans oid[],
+    OUT index_scans oid[],
+    OUT bitmap_scans oid[],
     OUT other_scans name,
     OUT nested_loop_join_count int,
     OUT hash_join_count int,
@@ -35,7 +35,23 @@ AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT VOLATILE;
 
 CREATE VIEW pg_mon AS
-  SELECT * FROM pg_mon();
+  SELECT queryid, total_time, first_tuple_time,expected_rows, actual_rows, is_parallel_query,
+         update_query,  (SELECT ARRAY
+                                        (SELECT relname
+                                        FROM pg_class
+                                        WHERE oid=ANY(seq_scans))) as seq_scans,
+                        (SELECT ARRAY
+                                        (SELECT relname
+                                        FROM pg_class
+                                        WHERE oid=ANY(index_scans))) as index_scans,
+                        (SELECT ARRAY
+                                        (SELECT relname
+                                        FROM pg_class
+                                        WHERE oid=ANY(bitmap_scans))) as bitmap_scans,
+          other_scans, nested_loop_join_count, hash_join_count, merge_join_count,
+          hist_bucket_ubounds, hist_freq, hist_actual_rows_bucket_ubounds, hist_actual_rows_freq,
+          hist_est_rows_bucket_ubounds,hist_est_rows_freq
+  FROM pg_mon();
 
 COMMENT ON COLUMN pg_mon.total_time IS 'Total time spent in query execution';
 COMMENT ON COLUMN pg_mon.first_tuple_time IS 'Time spent in the processing of first tuple only';
