@@ -498,7 +498,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
         {
             for (j = 0; j < MAX_TABLES && temp_entry->seq_scans[j] != 0; j++)
             {
-                for (i = 0; i < MAX_TABLES && entry->seq_scans[i] > 0; i++)
+                for (i = 0; i < MAX_TABLES && entry->seq_scans[i] != 0; i++)
                 {
                     if (temp_entry->seq_scans[j] == entry->seq_scans[i])
                     {
@@ -513,7 +513,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
             }
             for (j = 0; j < MAX_TABLES && temp_entry->index_scans[j] != 0; j++)
             {
-                for (i = 0; i < MAX_TABLES && entry->index_scans[i] > 0; i++)
+                for (i = 0; i < MAX_TABLES && entry->index_scans[i] != 0; i++)
                 {
                     if (temp_entry->index_scans[j] == entry->index_scans[i])
                     {
@@ -528,7 +528,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
             }
             for (j = 0; j < MAX_TABLES && temp_entry->bitmap_scans[j] != 0; j++)
             {
-                for (i = 0; i < MAX_TABLES && entry->bitmap_scans[i] > 0; i++)
+                for (i = 0; i < MAX_TABLES && entry->bitmap_scans[i] != 0; i++)
                 {
                     if (temp_entry->bitmap_scans[j] == entry->bitmap_scans[i])
                     {
