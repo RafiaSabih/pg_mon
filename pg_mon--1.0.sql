@@ -49,7 +49,7 @@ CREATE VIEW pg_mon AS
                                         FROM pg_class
                                         WHERE oid=ANY(bitmap_scans))) as bitmap_scans,
           other_scans, nested_loop_join_count, hash_join_count, merge_join_count,
-          hist_bucket_ubounds, hist_freq, hist_actual_rows_bucket_ubounds, hist_actual_rows_freq,
+          hist_time_ubounds, hist_time_freq, hist_actual_rows_bucket_ubounds, hist_actual_rows_freq,
           hist_est_rows_bucket_ubounds,hist_est_rows_freq
   FROM pg_mon();
 
@@ -66,8 +66,8 @@ COMMENT ON COLUMN pg_mon.other_scans IS 'Name of any other scan used in the quer
 COMMENT ON COLUMN pg_mon.nested_loop_join_count IS 'Count of nested loop joins in the query';
 COMMENT ON COLUMN pg_mon.hash_join_count IS 'Count of hash joins in the query';
 COMMENT ON COLUMN pg_mon.merge_join_count IS 'Count of merge joins in the query';
-COMMENT ON COLUMN pg_mon.hist_bucket_ubounds IS 'Upper bounds of the histogram buckets for query execution times';
-COMMENT ON COLUMN pg_mon.hist_freq IS 'Frequency of the respective histogram buckets for query execution times';
+COMMENT ON COLUMN pg_mon.hist_time_ubounds IS 'Upper bounds of the histogram buckets for query execution times';
+COMMENT ON COLUMN pg_mon.hist_time_freq IS 'Frequency of the respective histogram buckets for query execution times';
 COMMENT ON COLUMN pg_mon.hist_actual_rows_bucket_ubounds IS 'Upper bounds of the histogram buckets for the number of actual rows';
 COMMENT ON COLUMN pg_mon.hist_actual_rows_freq IS 'Frequency of the respective histogram buckets for number of actual rows in query';
 COMMENT ON COLUMN pg_mon.hist_est_rows_bucket_ubounds IS 'Upper bounds of the histogram buckets for the number of estimated rows';

@@ -49,12 +49,13 @@ PG_MODULE_MAGIC;
 
 /* GUC variables */
 static bool CONFIG_PLAN_INFO_IMMEDIATE = false;
+static bool CONFIG_PLAN_INFO_DISABLE = false;
 
 #define MON_COLS  20
 #define MON_HT_SIZE       1024
 #define NUMBUCKETS 30
 #define ROWNUMBUCKETS 20
-#define MAX_TABLES  30
+#define MAX_TABLES 30
 
 /*
  * Record for a query.
@@ -118,7 +119,7 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void shmem_shutdown(int code, Datum arg);
 
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
-static mon_rec * create_histogram(mon_rec *entry, AddHist);
+static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist);
 
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
@@ -215,15 +216,25 @@ void
 _PG_init(void)
 {
         DefineCustomBoolVariable("pg_mon.plan_info_immediate",
-                                                             "Populate the plan time information immediately after planning phase.",
-                                                              NULL,
-                                                         &CONFIG_PLAN_INFO_IMMEDIATE,
-                                                         CONFIG_PLAN_INFO_IMMEDIATE,
-                                                         PGC_SUSET,
-                                                         0,
-                                                         NULL,
-                                                         NULL,
-                                                         NULL);
+                                                            "Populate the plan time information immediately after planning phase.",
+                                                            NULL,
+                                                            &CONFIG_PLAN_INFO_IMMEDIATE,
+                                                            CONFIG_PLAN_INFO_IMMEDIATE,
+                                                            PGC_SUSET,
+                                                            0,
+                                                            NULL,
+                                                            NULL,
+                                                            NULL);
+        DefineCustomBoolVariable("pg_mon.plan_info_disable",
+                                                            "Skip plan time information.",
+                                                            NULL,
+                                                            &CONFIG_PLAN_INFO_DISABLE,
+                                                            CONFIG_PLAN_INFO_DISABLE,
+                                                            PGC_SUSET,
+                                                            0,
+                                                            NULL,
+                                                            NULL,
+                                                            NULL);
         /*
          * Request additional shared resources.  (These are no-ops if we're not in
          * the postmaster process.)  We'll allocate or attach to the shared
@@ -296,9 +307,12 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
         oldcontext = CurrentMemoryContext;
 
         if (!temp_entry)
+        {
             temp_entry = (mon_rec * ) palloc0(sizeof(mon_rec));
+        }
 
-        pgmon_plan_store(queryDesc);
+        if (!CONFIG_PLAN_INFO_DISABLE)
+            pgmon_plan_store(queryDesc);
 }
 
 /*
@@ -401,11 +415,13 @@ pgmon_plan_store(QueryDesc *queryDesc)
 
         Assert(queryDesc != NULL);
 
-        temp_entry->queryid = queryDesc->plannedstmt->queryId;;
+        temp_entry->queryid = queryDesc->plannedstmt->queryId;
 
-        plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, temp_entry);
-
-        temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
+        if (!CONFIG_PLAN_INFO_DISABLE)
+        {
+            plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, temp_entry);
+            temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
+        }
 
         /* Update the plan information for the entry */
         for (i = 0; i < NUMBUCKETS; i++)
@@ -421,7 +437,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
          * If plan information is to be provided immediately, then take the
          * lock here to update the information in hash table.
          */
-        if (CONFIG_PLAN_INFO_IMMEDIATE)
+        if (CONFIG_PLAN_INFO_IMMEDIATE && !CONFIG_PLAN_INFO_DISABLE)
         {
             LWLockAcquire(mon_lock, LW_EXCLUSIVE);
             entry = (mon_rec *) hash_search(mon_ht, &temp_entry->queryid,
@@ -439,7 +455,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
         mon_rec  *entry;
         volatile mon_rec *e;
         int64	queryId = queryDesc->plannedstmt->queryId;
-        bool found = false, already_there = false;
+        bool found = false, is_present = false;
         int i, j;
         MemoryContext current = CurrentMemoryContext;
 
@@ -455,7 +471,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
          * the statistics related to current execution of the query.
          */
         LWLockAcquire(mon_lock, LW_SHARED);
-        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, NULL);
+        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, &found);
         if (!entry)
         {
             LWLockRelease(mon_lock);
@@ -468,6 +484,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
                 *entry = *temp_entry;
                 SpinLockInit(&entry->mutex);
             }
+
         }
 
         e = (volatile mon_rec *) entry;
@@ -493,8 +510,10 @@ pgmon_exec_store(QueryDesc *queryDesc)
          * them to the entry here.
          * However, if the number of seq_scans or index_scans has reached
          * more than MAX_TABLES, then silently exit without adding.
+         *
+         * O(tables^2) in current loops may need sort aftert testing.
          */
-        if (found)
+        if (found && !CONFIG_PLAN_INFO_DISABLE)
         {
             for (j = 0; j < MAX_TABLES && temp_entry->seq_scans[j] != 0; j++)
             {
@@ -502,52 +521,58 @@ pgmon_exec_store(QueryDesc *queryDesc)
                 {
                     if (temp_entry->seq_scans[j] == entry->seq_scans[i])
                     {
-                        already_there = true;
+                        is_present = true;
                     }
                 }
-                if (!already_there && i < MAX_TABLES)
+                if (!is_present && i < MAX_TABLES)
                 {
                     entry->seq_scans[i] = temp_entry->seq_scans[j];
                 }
-                already_there = false;
+                is_present = false;
             }
+
             for (j = 0; j < MAX_TABLES && temp_entry->index_scans[j] != 0; j++)
             {
                 for (i = 0; i < MAX_TABLES && entry->index_scans[i] != 0; i++)
                 {
                     if (temp_entry->index_scans[j] == entry->index_scans[i])
                     {
-                        already_there = true;
+                        is_present = true;
                     }
                 }
-                if (!already_there && i < MAX_TABLES)
+                if (!is_present && i < MAX_TABLES)
                 {
                     entry->index_scans[i] = temp_entry->index_scans[j];
                 }
-                already_there = false;
+                is_present = false;
             }
+
             for (j = 0; j < MAX_TABLES && temp_entry->bitmap_scans[j] != 0; j++)
             {
                 for (i = 0; i < MAX_TABLES && entry->bitmap_scans[i] != 0; i++)
                 {
                     if (temp_entry->bitmap_scans[j] == entry->bitmap_scans[i])
                     {
-                        already_there = true;
+                        is_present = true;
                     }
                 }
-                if (!already_there && i < MAX_TABLES)
+                if (!is_present && i < MAX_TABLES)
                 {
                     entry->bitmap_scans[i] = temp_entry->bitmap_scans[j];
                 }
-                already_there = false;
+                is_present = false;
             }
-            entry->NestedLoopJoin = temp_entry->NestedLoopJoin;
-            entry->HashJoin = temp_entry->HashJoin;
-            entry->MergeJoin = temp_entry->MergeJoin;
+            if (entry->NestedLoopJoin < temp_entry->NestedLoopJoin)
+                entry->NestedLoopJoin = temp_entry->NestedLoopJoin;
+            if (entry->HashJoin < temp_entry->HashJoin)
+                entry->HashJoin = temp_entry->HashJoin;
+            if (entry->MergeJoin < temp_entry->MergeJoin)
+                entry->MergeJoin = temp_entry->MergeJoin;
         }
 
         SpinLockRelease(&e->mutex);
         LWLockRelease(mon_lock);
+
         MemoryContextSwitchTo(oldcontext);
         pfree(temp_entry);
         temp_entry = NULL;
@@ -882,7 +907,7 @@ pg_mon_reset(PG_FUNCTION_ARGS)
 }
 
 /* Create the histogram for the current query */
-static mon_rec * create_histogram(mon_rec *entry, AddHist value)
+static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist value)
 {
     int i;
     if (value == QUERY_TIME)
