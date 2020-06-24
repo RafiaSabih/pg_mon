@@ -16,15 +16,15 @@ CREATE FUNCTION pg_mon(
     OUT actual_rows float8,
     OUT is_parallel_query bool,
     OUT update_query bool,
-    OUT seq_scans name[],
-    OUT index_scans name[],
-    OUT bitmap_scans name[],
+    OUT seq_scans oid[],
+    OUT index_scans oid[],
+    OUT bitmap_scans oid[],
     OUT other_scans name,
     OUT nested_loop_join_count int,
     OUT hash_join_count int,
     OUT merge_join_count int,
-    OUT hist_bucket_ubounds int[],
-    OUT hist_freq int[],
+    OUT hist_time_ubounds int[],
+    OUT hist_time_freq int[],
     OUT hist_actual_rows_bucket_ubounds int[],
     OUT hist_actual_rows_freq int[],
     OUT hist_est_rows_bucket_ubounds int[],
@@ -35,7 +35,23 @@ AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT VOLATILE;
 
 CREATE VIEW pg_mon AS
-  SELECT * FROM pg_mon();
+  SELECT queryid, total_time, first_tuple_time,expected_rows, actual_rows, is_parallel_query,
+         update_query,  (SELECT ARRAY
+                                        (SELECT relname
+                                        FROM pg_class
+                                        WHERE oid=ANY(seq_scans))) as seq_scans,
+                        (SELECT ARRAY
+                                        (SELECT relname
+                                        FROM pg_class
+                                        WHERE oid=ANY(index_scans))) as index_scans,
+                        (SELECT ARRAY
+                                        (SELECT relname
+                                        FROM pg_class
+                                        WHERE oid=ANY(bitmap_scans))) as bitmap_scans,
+          other_scans, nested_loop_join_count, hash_join_count, merge_join_count,
+          hist_time_ubounds, hist_time_freq, hist_actual_rows_bucket_ubounds, hist_actual_rows_freq,
+          hist_est_rows_bucket_ubounds,hist_est_rows_freq
+  FROM pg_mon();
 
 COMMENT ON COLUMN pg_mon.total_time IS 'Total time spent in query execution';
 COMMENT ON COLUMN pg_mon.first_tuple_time IS 'Time spent in the processing of first tuple only';
@@ -50,8 +66,8 @@ COMMENT ON COLUMN pg_mon.other_scans IS 'Name of any other scan used in the quer
 COMMENT ON COLUMN pg_mon.nested_loop_join_count IS 'Count of nested loop joins in the query';
 COMMENT ON COLUMN pg_mon.hash_join_count IS 'Count of hash joins in the query';
 COMMENT ON COLUMN pg_mon.merge_join_count IS 'Count of merge joins in the query';
-COMMENT ON COLUMN pg_mon.hist_bucket_ubounds IS 'Upper bounds of the histogram buckets for query execution times';
-COMMENT ON COLUMN pg_mon.hist_freq IS 'Frequency of the respective histogram buckets for query execution times';
+COMMENT ON COLUMN pg_mon.hist_time_ubounds IS 'Upper bounds of the histogram buckets for query execution times';
+COMMENT ON COLUMN pg_mon.hist_time_freq IS 'Frequency of the respective histogram buckets for query execution times';
 COMMENT ON COLUMN pg_mon.hist_actual_rows_bucket_ubounds IS 'Upper bounds of the histogram buckets for the number of actual rows';
 COMMENT ON COLUMN pg_mon.hist_actual_rows_freq IS 'Frequency of the respective histogram buckets for number of actual rows in query';
 COMMENT ON COLUMN pg_mon.hist_est_rows_bucket_ubounds IS 'Upper bounds of the histogram buckets for the number of estimated rows';

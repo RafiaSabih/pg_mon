@@ -36,6 +36,7 @@
 #include "utils/builtins.h"
 #include "nodes/plannodes.h"
 #include "parser/parsetree.h"
+#include "storage/spin.h"
 
 
 Datum		pg_mon(PG_FUNCTION_ARGS);
@@ -47,16 +48,14 @@ PG_FUNCTION_INFO_V1(pg_mon_reset);
 PG_MODULE_MAGIC;
 
 /* GUC variables */
-static int	CONFIG_MIN_DURATION = 0; /* set -1 for disable, in milliseconds */
-static bool CONFIG_TIMING_ENABLED = true;
 static bool CONFIG_PLAN_INFO_IMMEDIATE = false;
-static bool CONFIG_TRACK_NESTED_STATEMENTS = true;
+static bool CONFIG_PLAN_INFO_DISABLE = false;
 
 #define MON_COLS  20
 #define MON_HT_SIZE       1024
 #define NUMBUCKETS 30
 #define ROWNUMBUCKETS 20
-#define MAX_TABLES  30
+#define MAX_TABLES 30
 
 /*
  * Record for a query.
@@ -70,9 +69,9 @@ typedef struct mon_rec
         double current_actual_rows;
         bool is_parallel;
         bool ModifyTable;
-        NameData seq_scans[MAX_TABLES];
-        NameData index_scans[MAX_TABLES];
-        NameData bitmap_scans[MAX_TABLES];
+        Oid seq_scans[MAX_TABLES];
+        Oid index_scans[MAX_TABLES];
+        Oid bitmap_scans[MAX_TABLES];
         NameData other_scan;
         int NestedLoopJoin ;
         int HashJoin;
@@ -83,6 +82,7 @@ typedef struct mon_rec
         int64 actual_row_freq[ROWNUMBUCKETS];
         int64 est_row_buckets[ROWNUMBUCKETS];
         int64 est_row_freq[ROWNUMBUCKETS];
+        slock_t		mutex;
 }mon_rec;
 
 /* Current nesting depth of ExecutorRun calls */
@@ -113,13 +113,13 @@ static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
 static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
 static void pgmon_exec_store(QueryDesc *queryDesc);
-static void pgmon_save_firsttuple(QueryDesc *queryDesc);
+
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void shmem_shutdown(int code, Datum arg);
 
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
-static mon_rec * create_histogram(mon_rec *entry, AddHist);
+static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist);
 
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
@@ -142,7 +142,8 @@ static int row_bucket_bounds[ROWNUMBUCKETS] = {
  * Keep a temporary record to store the plan information of the
  * current query
  */
-static mon_rec *temp_entry;
+static mon_rec *temp_entry = NULL;
+static MemoryContext oldcontext = NULL;
 /*
  * shmem_startup hook: allocate and attach to shared memory,
  */
@@ -173,10 +174,10 @@ shmem_startup(void)
         mon_ht = ShmemInitHash("mon_hash", MON_HT_SIZE, MON_HT_SIZE,
                                 &info, HASH_ELEM);
 #endif
-    mon_lock = &(GetNamedLWLockTranche("mon_lock"))->lock;
-    LWLockRelease(AddinShmemInitLock);
+        mon_lock = &(GetNamedLWLockTranche("mon_lock"))->lock;
+        LWLockRelease(AddinShmemInitLock);
 
-    /*
+        /*
         * If we're in the postmaster (or a standalone backend...), set up a shmem
         * exit hook to dump the statistics to disk.
         */
@@ -214,50 +215,26 @@ qmon_memsize(void)
 void
 _PG_init(void)
 {
-        /* Define custom GUC variables. */
-        DefineCustomIntVariable("pg_mon.min_duration",
-                                                        "Sets the minimum execution time above which plans will be logged.",
-                                                        "Zero prints all plans. -1 turns this feature off.",
-                                                        &CONFIG_MIN_DURATION,
-                                                        CONFIG_MIN_DURATION,
-                                                        -1, INT_MAX,
-                                                        PGC_SUSET,
-                                                        GUC_UNIT_MS,
-                                                        NULL,
-                                                        NULL,
-                                                        NULL);
-
-        DefineCustomBoolVariable("pg_mon.nested_statements",
-                                                         "Monitor nested statements.",
-                                                         NULL,
-                                                         &CONFIG_TRACK_NESTED_STATEMENTS,
-                                                         CONFIG_TRACK_NESTED_STATEMENTS,
-                                                         PGC_SUSET,
-                                                         0,
-                                                         NULL,
-                                                         NULL,
-                                                         NULL);
-
-        DefineCustomBoolVariable("pg_mon.timing_enabled",
-                                                         "Collect timing data, not just row counts.",
-                                                         NULL,
-                                                         &CONFIG_TIMING_ENABLED,
-                                                         CONFIG_TIMING_ENABLED,
-                                                         PGC_SUSET,
-                                                         0,
-                                                         NULL,
-                                                         NULL,
-                                                         NULL);
         DefineCustomBoolVariable("pg_mon.plan_info_immediate",
-                                                             "Populate the plan time information immediately after planning phase.",
-                                                              NULL,
-                                                         &CONFIG_PLAN_INFO_IMMEDIATE,
-                                                         CONFIG_PLAN_INFO_IMMEDIATE,
-                                                         PGC_SUSET,
-                                                         0,
-                                                         NULL,
-                                                         NULL,
-                                                         NULL);
+                                                            "Populate the plan time information immediately after planning phase.",
+                                                            NULL,
+                                                            &CONFIG_PLAN_INFO_IMMEDIATE,
+                                                            CONFIG_PLAN_INFO_IMMEDIATE,
+                                                            PGC_SUSET,
+                                                            0,
+                                                            NULL,
+                                                            NULL,
+                                                            NULL);
+        DefineCustomBoolVariable("pg_mon.plan_info_disable",
+                                                            "Skip plan time information.",
+                                                            NULL,
+                                                            &CONFIG_PLAN_INFO_DISABLE,
+                                                            CONFIG_PLAN_INFO_DISABLE,
+                                                            PGC_SUSET,
+                                                            0,
+                                                            NULL,
+                                                            NULL,
+                                                            NULL);
         /*
          * Request additional shared resources.  (These are no-ops if we're not in
          * the postmaster process.)  We'll allocate or attach to the shared
@@ -301,37 +278,41 @@ _PG_fini(void)
 static void
 pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-        temp_entry = (mon_rec * ) palloc0(sizeof(mon_rec));
-
-        if (CONFIG_TIMING_ENABLED)
-        {
-                queryDesc->instrument_options |= INSTRUMENT_TIMER;
-                queryDesc->instrument_options |= INSTRUMENT_ROWS;
-        }
-        else
-        {
-                queryDesc->instrument_options |= INSTRUMENT_ROWS;
-        }
-
-        if (prev_ExecutorStart)
+    if (prev_ExecutorStart)
                 prev_ExecutorStart(queryDesc, eflags);
         else
                 standard_ExecutorStart(queryDesc, eflags);
 
-        pgmon_plan_store(queryDesc);
         /*
-            * Set up to track total elapsed time in ExecutorRun.  Make sure the
-            * space is allocated in the per-query context so it will go away at
-            * ExecutorEnd.
-            */
-        if (queryDesc->totaltime == NULL)
+        * Set up to track total elapsed time in ExecutorRun.Make sure the space
+        * is allocated in the per-query context so it will go away at ExecutorEnd.
+        */
+        if(queryDesc->totaltime == NULL)
         {
-                MemoryContext oldcxt;
+            MemoryContext oldcxt;
 
-                oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
-                queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
-                MemoryContextSwitchTo(oldcxt);
+            oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
+            queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
+            MemoryContextSwitchTo(oldcxt);
         }
+        if (queryDesc->planstate->instrument == NULL)
+        {
+            MemoryContext oldcxt;
+            oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
+            queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL);
+            MemoryContextSwitchTo(oldcxt);
+        }
+
+        queryDesc->instrument_options |= INSTRUMENT_ROWS;
+        oldcontext = CurrentMemoryContext;
+
+        if (!temp_entry)
+        {
+            temp_entry = (mon_rec * ) palloc0(sizeof(mon_rec));
+        }
+
+        if (!CONFIG_PLAN_INFO_DISABLE)
+            pgmon_plan_store(queryDesc);
 }
 
 /*
@@ -370,8 +351,11 @@ pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
 static void
 pgmon_ExecutorFinish(QueryDesc *queryDesc)
 {
+    if (temp_entry && queryDesc->planstate->instrument)
+    {
+       temp_entry->first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
+    }
         nesting_level++;
-        pgmon_save_firsttuple(queryDesc);
 
         PG_TRY();
         {
@@ -401,33 +385,22 @@ pgmon_ExecutorFinish(QueryDesc *queryDesc)
 static void
 pgmon_ExecutorEnd(QueryDesc *queryDesc)
 {
-        if (queryDesc->totaltime && CONFIG_TIMING_ENABLED)
+        if (queryDesc->totaltime)
         {
-                double		msec;
-
                 /*
-                 * Make sure stats accumulation is done.  (Note: it's okay if several
-                 * levels of hook all do this.)
+                 * Make sure stats accumulation is done.
+                 * (Note: it's okay if several levels of hook all do this.)
                  */
                 InstrEndLoop(queryDesc->totaltime);
-
-                /* Save query information if duration is exceeded. */
-                msec = queryDesc->totaltime->total * 1000;
-                if (msec >= CONFIG_MIN_DURATION)
-                        pgmon_exec_store(queryDesc);
         }
+        /* Save query information */
+        if (temp_entry)
+            pgmon_exec_store(queryDesc);
 
         if (prev_ExecutorEnd)
                 prev_ExecutorEnd(queryDesc);
         else
                 standard_ExecutorEnd(queryDesc);
-}
-
-/* Save the time taken by processing of first tuple fix!! store locally to update in the pgmon_exec_store, save locking*/
-static void
-pgmon_save_firsttuple(QueryDesc *queryDesc)
-{
-    temp_entry->first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
 }
 
 static void
@@ -442,11 +415,13 @@ pgmon_plan_store(QueryDesc *queryDesc)
 
         Assert(queryDesc != NULL);
 
-        temp_entry->queryid = queryDesc->plannedstmt->queryId;;
+        temp_entry->queryid = queryDesc->plannedstmt->queryId;
 
-        plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, temp_entry);
-
-        temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
+        if (!CONFIG_PLAN_INFO_DISABLE)
+        {
+            plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, temp_entry);
+            temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
+        }
 
         /* Update the plan information for the entry */
         for (i = 0; i < NUMBUCKETS; i++)
@@ -462,7 +437,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
          * If plan information is to be provided immediately, then take the
          * lock here to update the information in hash table.
          */
-        if (CONFIG_PLAN_INFO_IMMEDIATE)
+        if (CONFIG_PLAN_INFO_IMMEDIATE && !CONFIG_PLAN_INFO_DISABLE)
         {
             LWLockAcquire(mon_lock, LW_EXCLUSIVE);
             entry = (mon_rec *) hash_search(mon_ht, &temp_entry->queryid,
@@ -478,8 +453,11 @@ static void
 pgmon_exec_store(QueryDesc *queryDesc)
 {
         mon_rec  *entry;
+        volatile mon_rec *e;
         int64	queryId = queryDesc->plannedstmt->queryId;
-        bool found = false;
+        bool found = false, is_present = false;
+        int i, j;
+        MemoryContext current = CurrentMemoryContext;
 
         Assert(queryDesc!= NULL);
 
@@ -492,34 +470,120 @@ pgmon_exec_store(QueryDesc *queryDesc)
          * contents of temp_entry otherwise only update the histograms and copy
          * the statistics related to current execution of the query.
          */
-        LWLockAcquire(mon_lock, LW_EXCLUSIVE);
-        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
-        if (!found)
-            *entry = *temp_entry;
+        LWLockAcquire(mon_lock, LW_SHARED);
+        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, &found);
+        if (!entry)
+        {
+            LWLockRelease(mon_lock);
+            LWLockAcquire(mon_lock, LW_EXCLUSIVE);
+            entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, &found);
 
-        entry->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
-        entry->current_actual_rows = queryDesc->totaltime->ntuples;
-        entry->first_tuple_time = temp_entry->first_tuple_time;
-        entry = create_histogram(entry, QUERY_TIME);
-        entry = create_histogram(entry, ACTUAL_ROWS);
+            /* Double check to ensure the entry is infact new */
+            if (!found)
+            {
+                *entry = *temp_entry;
+                SpinLockInit(&entry->mutex);
+            }
+
+        }
+
+        e = (volatile mon_rec *) entry;
+        SpinLockAcquire(&e->mutex);
+
+        e->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
+        e->first_tuple_time = temp_entry->first_tuple_time;
+        e = create_histogram(e, QUERY_TIME);
+        e->current_actual_rows = queryDesc->totaltime->ntuples;
+        e = create_histogram(e, ACTUAL_ROWS);
 
         /*
          * If planning info is not already updated then only update
          * estimated rows histogram.
          */
         if (!CONFIG_PLAN_INFO_IMMEDIATE)
-            entry = create_histogram(entry, EST_ROWS);
+            e = create_histogram(e, EST_ROWS);
 
+        /*
+         * If this query is already present in the hash table, then update the
+         * plan information of the query also. If the seq_scans, indexes, etc.
+         * used by the query are different from the previous view then add
+         * them to the entry here.
+         * However, if the number of seq_scans or index_scans has reached
+         * more than MAX_TABLES, then silently exit without adding.
+         *
+         * O(tables^2) in current loops may need sort aftert testing.
+         */
+        if (found && !CONFIG_PLAN_INFO_DISABLE)
+        {
+            for (j = 0; j < MAX_TABLES && temp_entry->seq_scans[j] != 0; j++)
+            {
+                for (i = 0; i < MAX_TABLES && entry->seq_scans[i] != 0; i++)
+                {
+                    if (temp_entry->seq_scans[j] == entry->seq_scans[i])
+                    {
+                        is_present = true;
+                    }
+                }
+                if (!is_present && i < MAX_TABLES)
+                {
+                    entry->seq_scans[i] = temp_entry->seq_scans[j];
+                }
+                is_present = false;
+            }
+
+            for (j = 0; j < MAX_TABLES && temp_entry->index_scans[j] != 0; j++)
+            {
+                for (i = 0; i < MAX_TABLES && entry->index_scans[i] != 0; i++)
+                {
+                    if (temp_entry->index_scans[j] == entry->index_scans[i])
+                    {
+                        is_present = true;
+                    }
+                }
+                if (!is_present && i < MAX_TABLES)
+                {
+                    entry->index_scans[i] = temp_entry->index_scans[j];
+                }
+                is_present = false;
+            }
+
+            for (j = 0; j < MAX_TABLES && temp_entry->bitmap_scans[j] != 0; j++)
+            {
+                for (i = 0; i < MAX_TABLES && entry->bitmap_scans[i] != 0; i++)
+                {
+                    if (temp_entry->bitmap_scans[j] == entry->bitmap_scans[i])
+                    {
+                        is_present = true;
+                    }
+                }
+                if (!is_present && i < MAX_TABLES)
+                {
+                    entry->bitmap_scans[i] = temp_entry->bitmap_scans[j];
+                }
+                is_present = false;
+            }
+            if (entry->NestedLoopJoin < temp_entry->NestedLoopJoin)
+                entry->NestedLoopJoin = temp_entry->NestedLoopJoin;
+            if (entry->HashJoin < temp_entry->HashJoin)
+                entry->HashJoin = temp_entry->HashJoin;
+            if (entry->MergeJoin < temp_entry->MergeJoin)
+                entry->MergeJoin = temp_entry->MergeJoin;
+        }
+
+        SpinLockRelease(&e->mutex);
         LWLockRelease(mon_lock);
 
+        MemoryContextSwitchTo(oldcontext);
         pfree(temp_entry);
+        temp_entry = NULL;
+        MemoryContextSwitchTo(current);
 }
 
 static void
 plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
 {
-    const char *relname;
     int i;
+    bool found = false;
     IndexScan *idx;
     BitmapIndexScan *bidx;
     Scan *scan;
@@ -534,31 +598,51 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         scan = (Scan *)plan_node;
                         relid = scan->scanrelid;
                         rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
-                        relname = get_rel_name(rte->relid);
-                        for (i = 0; i < MAX_TABLES &&
-                                    strcmp(entry->seq_scans[i].data, "") != 0;
-                                    i++);
-                        namestrcpy(&entry->seq_scans[i], relname);
+                        for (i = 0; i < MAX_TABLES && entry->seq_scans[i] > 0;
+                             i++)
+                        {
+                            if (entry->seq_scans[i] == rte->relid)
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found && i < MAX_TABLES)
+                            entry->seq_scans[i] = rte->relid;
                         break;
                     case T_IndexScan:
                     case T_IndexOnlyScan:
                         idx = (IndexScan *)plan_node;
                         scan = &(idx->scan);
-                        relname = get_rel_name(idx->indexid);
                         for (i = 0; i < MAX_TABLES &&
-                                    strcmp(entry->index_scans[i].data, "") != 0;
+                                    entry->index_scans[i] > 0;
                                     i++);
-                        namestrcpy(&entry->index_scans[i], relname);
+                        {
+                            if (entry->index_scans[i] == idx->indexid)
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found && i < MAX_TABLES)
+                            entry->index_scans[i] = idx->indexid;
                         break;
                     case T_BitmapIndexScan:
                     case T_BitmapHeapScan:
                         bidx = (BitmapIndexScan *)plan_node;
                         scan = &(bidx->scan);
-                        relname = get_rel_name(bidx->indexid);
                         for (i = 0; i < MAX_TABLES &&
-                                    strcmp(entry->bitmap_scans[i].data, "") != 0;
-                                    i++);
-                        namestrcpy(&entry->bitmap_scans[i], relname);
+                                    entry->bitmap_scans[i] > 0;
+                                    i++)
+                        {
+                            if (entry->bitmap_scans[i] == bidx->indexid)
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found && i < MAX_TABLES)
+                            entry->bitmap_scans[i] = bidx->indexid;
                         break;
                     case T_FunctionScan:
                         namestrcpy(&entry->other_scan, "T_FunctionScan");
@@ -674,40 +758,40 @@ pg_mon(PG_FUNCTION_ARGS)
                 values[i++] = BoolGetDatum(entry->is_parallel);
                 values[i++] = BoolGetDatum(entry->ModifyTable);
 
-                if (!entry->ModifyTable && strcmp(entry->seq_scans[0].data, "") == 0)
+                if (!entry->ModifyTable && entry->seq_scans[0] == 0)
                     nulls[i++] = true;
                 else
                 {
                     Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
                     int n, idx = 0;
-                    for (n = 0; n < MAX_TABLES && strcmp(entry->seq_scans[n].data, "") != 0; n++)
-                            numdatums[idx++] = NameGetDatum(&entry->seq_scans[n]);
-                    arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
+                    for (n = 0; n < MAX_TABLES && entry->seq_scans[n] != 0; n++)
+                            numdatums[idx++] = ObjectIdGetDatum(&entry->seq_scans[n]);
+                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
-                if (!entry->ModifyTable && strcmp(entry->index_scans[0].data, "") == 0)
+                if (!entry->ModifyTable && entry->index_scans[0] == 0)
                     nulls[i++] = true;
                 else
                 {
                     Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
                     int n, idx = 0;
-                    for (n = 0; n < MAX_TABLES && strcmp(entry->index_scans[n].data, "") != 0; n++)
-                            numdatums[idx++] = NameGetDatum(&entry->index_scans[n]);
-                    arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
+                    for (n = 0; n < MAX_TABLES && entry->index_scans[n] != 0; n++)
+                            numdatums[idx++] = ObjectIdGetDatum(&entry->index_scans[n]);
+                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
-                if (!entry->ModifyTable && strcmp(entry->bitmap_scans[0].data, "") == 0)
+                if (!entry->ModifyTable && entry->bitmap_scans[0] == 0)
                     nulls[i++] = true;
                 else
                 {
                     Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
                     int n, idx = 0;
-                    for (n = 0; n < MAX_TABLES && strcmp(entry->bitmap_scans[n].data, "") != 0; n++)
-                            numdatums[idx++] = NameGetDatum(&entry->bitmap_scans[n]);
-                    arry = construct_array(numdatums, idx, NAMEOID, NAMEDATALEN, false, 'c');
+                    for (n = 0; n < MAX_TABLES && entry->bitmap_scans[n] != 0; n++)
+                            numdatums[idx++] = ObjectIdGetDatum(&entry->bitmap_scans[n]);
+                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
                 values[i++] = NameGetDatum(&entry->other_scan);
@@ -823,7 +907,7 @@ pg_mon_reset(PG_FUNCTION_ARGS)
 }
 
 /* Create the histogram for the current query */
-static mon_rec * create_histogram(mon_rec *entry, AddHist value)
+static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist value)
 {
     int i;
     if (value == QUERY_TIME)
