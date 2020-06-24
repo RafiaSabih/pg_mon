@@ -7,31 +7,35 @@ execution time monitoring by histograms and saving important query plan
 information in shared hash table which is available via view --pg_mon. The
 information available via the view is as follows,
 
-|  Queryid | total_time | first_tuple_time | expected rows | actual rows
-| is_parallel_query | update_query | seq_scans | index_scans | bitmap_scans
-| other_scans | nested_loop_join_count | hash_join_count | merge_join_count
-| hist_time_ubounds | hist_time_freq |  hist_actual_rows_bucket_ubounds
-| hist_actual_rows_bucket_freq |  hist_est_rows_bucket_ubounds
-| hist_est_rows_bucket_freq |
+| queryid |  total_time  | first_tuple_time | expected_rows | actual rows | is_parallel_query | update_query | seq_scans | index_scans | bitmap_scans | other_scans | nested_loop_join_count | merge_join_count | hash_join_count | hist_time_ubounds | hist_time_freq | hist_actual_rows_bucket_ubounds | hist_actual_rows_bucket_freq | hist_est_rows_bucket_ubounds | hist_est_rows_bucket_freq |
+|---------|--------------|------------------|---------------|-------------|-------------------|--------------|-----------|-------------|--------------|-------------|------------------------|------------------|-----------------|-------------------|----------------|---------------------------------|------------------------------|------------------------------|---------------------------|
+|         |              |                  |               |             |                   |              |           |             |              |             |                        |                  |                 |                   |                |                                 |                              |                              |                           |
 
 - For better monitoring of query instances, it saves execution time
    histograms. The columns corresponding to this information in the view are,
-   | hist_time_ubounds | hist_time_freq |
+
+    | hist_time_ubounds | hist_time_freq |
+    |-------------------|----------------|
+    |                   |                |
+
    To enhance the experience more, there are also histograms for
    estimated and actual number of rows, this is available in  columns,
-   | hist_actual_rows_bucket_ubounds | hist_actual_rows_bucket_freq |
-   | hist_est_rows_bucket_ubounds | hist_est_rows_bucket_freq |
+
+    | hist_actual_rows_bucket_ubounds | hist_actual_rows_bucket_freq | hist_est_rows_bucket_ubound | hist_est_rows_bucket_freq |
+    |---------------------------------|------------------------------|-----------------------------|---------------------------|
+    |                                 |                              |                             |                           |
+
 - An in-memory hash-table stores the important information from query plans,
    viz, name of the tables using sequential scans, name of indexes used in the
    query, number and types of different join methods in the query.
 
-How to install the extension
+## Installation
 
 1. Run make and make install in the pg_mon folder
 2. Add pg_mon to shared_preload_libraries
 3. Run 'create extension pg_mon;' in client
 
-How to use the extension
+## How to use the extension
 
 - once enabled, it keeps on saving the information of all the running queries.
 - one may view the contents of the view using 'select * from pg_mon; '
@@ -39,6 +43,8 @@ How to use the extension
                                  be made available immediately after planning phase.
                                  By default this is set to false. There might be
                                  locking overhead incurred by setting this to true.
+- pg_mon.plan_info_disable - another boolean GUC to skip saving any information regarding
+                             the query plan, like scans, joins, etc.
 
 More details on the information available via the extension
 
