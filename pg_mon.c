@@ -767,7 +767,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     int n, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->seq_scans[n] != 0; n++)
                             numdatums[idx++] = ObjectIdGetDatum(&entry->seq_scans[n]);
-                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), false, 'c');
+                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
                 if (!entry->ModifyTable && entry->index_scans[0] == 0)
@@ -779,7 +779,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     int n, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->index_scans[n] != 0; n++)
                             numdatums[idx++] = ObjectIdGetDatum(&entry->index_scans[n]);
-                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), false, 'c');
+                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
                 if (!entry->ModifyTable && entry->bitmap_scans[0] == 0)
@@ -791,7 +791,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     int n, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->bitmap_scans[n] != 0; n++)
                             numdatums[idx++] = ObjectIdGetDatum(&entry->bitmap_scans[n]);
-                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), false, 'c');
+                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
                 values[i++] = NameGetDatum(&entry->other_scan);
