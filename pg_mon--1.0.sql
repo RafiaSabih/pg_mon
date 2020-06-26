@@ -36,18 +36,7 @@ LANGUAGE C STRICT VOLATILE;
 
 CREATE VIEW pg_mon AS
   SELECT queryid, total_time, first_tuple_time,expected_rows, actual_rows, is_parallel_query,
-         update_query,  (SELECT ARRAY
-                                        (SELECT relname
-                                        FROM pg_class
-                                        WHERE oid=ANY(seq_scans))) as seq_scans,
-                        (SELECT ARRAY
-                                        (SELECT relname
-                                        FROM pg_class
-                                        WHERE oid=ANY(index_scans))) as index_scans,
-                        (SELECT ARRAY
-                                        (SELECT relname
-                                        FROM pg_class
-                                        WHERE oid=ANY(bitmap_scans))) as bitmap_scans,
+         update_query, seq_scans::regclass[], index_scans::regclass[], bitmap_scans::regclass[],
           other_scans, nested_loop_join_count, hash_join_count, merge_join_count,
           hist_time_ubounds, hist_time_freq, hist_actual_rows_bucket_ubounds, hist_actual_rows_freq,
           hist_est_rows_bucket_ubounds,hist_est_rows_freq

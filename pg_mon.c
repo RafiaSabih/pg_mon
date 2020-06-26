@@ -613,10 +613,8 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                     case T_IndexScan:
                     case T_IndexOnlyScan:
                         idx = (IndexScan *)plan_node;
-                        scan = &(idx->scan);
-                        for (i = 0; i < MAX_TABLES &&
-                                    entry->index_scans[i] > 0;
-                                    i++);
+                        for (i = 0; i < MAX_TABLES && entry->index_scans[i] > 0;
+                            i++);
                         {
                             if (entry->index_scans[i] == idx->indexid)
                             {
@@ -628,12 +626,9 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                             entry->index_scans[i] = idx->indexid;
                         break;
                     case T_BitmapIndexScan:
-                    case T_BitmapHeapScan:
                         bidx = (BitmapIndexScan *)plan_node;
-                        scan = &(bidx->scan);
-                        for (i = 0; i < MAX_TABLES &&
-                                    entry->bitmap_scans[i] > 0;
-                                    i++)
+                        for (i = 0; i < MAX_TABLES && entry->bitmap_scans[i] > 0;
+                             i++)
                         {
                             if (entry->bitmap_scans[i] == bidx->indexid)
                             {
