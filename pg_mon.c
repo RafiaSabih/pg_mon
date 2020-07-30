@@ -52,7 +52,7 @@ static bool CONFIG_PLAN_INFO_IMMEDIATE = false;
 static bool CONFIG_PLAN_INFO_DISABLE = false;
 
 #define MON_COLS  20
-#define MON_HT_SIZE       1024
+#define MON_HT_SIZE      5000
 #define NUMBUCKETS 30
 #define ROWNUMBUCKETS 20
 #define MAX_TABLES 30
@@ -120,6 +120,7 @@ static void shmem_shutdown(int code, Datum arg);
 
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
 static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist);
+static void pg_mon_reset_internal(void);
 
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
@@ -297,10 +298,7 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
         }
         if (queryDesc->planstate->instrument == NULL)
         {
-            MemoryContext oldcxt;
-            oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
             queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL);
-            MemoryContextSwitchTo(oldcxt);
         }
 
         queryDesc->instrument_options |= INSTRUMENT_ROWS;
@@ -308,9 +306,25 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
         if (!temp_entry)
         {
-            temp_entry = (mon_rec * ) palloc0(sizeof(mon_rec));
-        }
+            /*
+             * Use the ExecutorState context for the entry which is reset after
+             * every execution, hence will be easier to manage and avoid issues.
+             */
+            MemoryContext oldcxt;
 
+            oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
+            temp_entry = (mon_rec * ) palloc0(sizeof(mon_rec));
+            MemoryContextSwitchTo(oldcxt);
+        }
+        else  if (temp_entry->queryid != queryDesc->plannedstmt->queryId){
+            /* To handle the case of uncleared entry from previous query */
+            MemoryContext oldcxt;
+
+            oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
+            temp_entry = NULL;
+            temp_entry = (mon_rec * ) palloc0(sizeof(mon_rec));
+            MemoryContextSwitchTo(oldcxt);
+        }
         if (!CONFIG_PLAN_INFO_DISABLE)
             pgmon_plan_store(queryDesc);
 }
@@ -392,10 +406,14 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
                  * (Note: it's okay if several levels of hook all do this.)
                  */
                 InstrEndLoop(queryDesc->totaltime);
+                InstrEndLoop(queryDesc->planstate->instrument);
         }
         /* Save query information */
         if (temp_entry)
+        {
             pgmon_exec_store(queryDesc);
+            temp_entry = NULL;
+        }
 
         if (prev_ExecutorEnd)
                 prev_ExecutorEnd(queryDesc);
@@ -471,6 +489,20 @@ pgmon_exec_store(QueryDesc *queryDesc)
          * the statistics related to current execution of the query.
          */
         LWLockAcquire(mon_lock, LW_SHARED);
+
+        /*
+         * Check if the number of entries are exceeding the limit. Currently,
+         * we are handling this case by resetting the pg_mon view, but could be
+         * dealt more elegantly later, e.g. as in pg_stat_statetments remove
+         * the least used entries, etc.
+         */
+        while (hash_get_num_entries(mon_ht) >= MON_HT_SIZE)
+        {
+            LWLockRelease(mon_lock);
+            pg_mon_reset_internal();
+            LWLockAcquire(mon_lock, LW_SHARED);
+        }
+
         entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, &found);
         if (!entry)
         {
@@ -572,11 +604,6 @@ pgmon_exec_store(QueryDesc *queryDesc)
 
         SpinLockRelease(&e->mutex);
         LWLockRelease(mon_lock);
-
-        MemoryContextSwitchTo(oldcontext);
-        pfree(temp_entry);
-        temp_entry = NULL;
-        MemoryContextSwitchTo(current);
 }
 
 static void
@@ -614,7 +641,7 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                     case T_IndexOnlyScan:
                         idx = (IndexScan *)plan_node;
                         for (i = 0; i < MAX_TABLES && entry->index_scans[i] > 0;
-                            i++);
+                            i++)
                         {
                             if (entry->index_scans[i] == idx->indexid)
                             {
@@ -757,36 +784,36 @@ pg_mon(PG_FUNCTION_ARGS)
                     nulls[i++] = true;
                 else
                 {
-                    Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
+                    Datum	   *datums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->seq_scans[n] != 0; n++)
-                            numdatums[idx++] = ObjectIdGetDatum(&entry->seq_scans[n]);
-                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), false, 'i');
+                            datums[idx++] = ObjectIdGetDatum(&entry->seq_scans[n]);
+                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
                 if (!entry->ModifyTable && entry->index_scans[0] == 0)
                     nulls[i++] = true;
                 else
                 {
-                    Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
+                    Datum	   *datums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->index_scans[n] != 0; n++)
-                            numdatums[idx++] = ObjectIdGetDatum(&entry->index_scans[n]);
-                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), false, 'i');
+                            datums[idx++] = ObjectIdGetDatum(&entry->index_scans[n]);
+                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
                 if (!entry->ModifyTable && entry->bitmap_scans[0] == 0)
                     nulls[i++] = true;
                 else
                 {
-                    Datum	   *numdatums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
+                    Datum	   *datums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->bitmap_scans[n] != 0; n++)
-                            numdatums[idx++] = ObjectIdGetDatum(&entry->bitmap_scans[n]);
-                    arry = construct_array(numdatums, idx, OIDOID, sizeof(Oid), false, 'i');
+                            datums[idx++] = ObjectIdGetDatum(&entry->bitmap_scans[n]);
+                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
                 values[i++] = NameGetDatum(&entry->other_scan);
@@ -886,6 +913,14 @@ pg_mon(PG_FUNCTION_ARGS)
 Datum
 pg_mon_reset(PG_FUNCTION_ARGS)
 {
+    pg_mon_reset_internal();
+
+    PG_RETURN_VOID();
+}
+
+static
+void pg_mon_reset_internal()
+{
     HASH_SEQ_STATUS status;
     mon_rec *entry;
 
@@ -897,10 +932,7 @@ pg_mon_reset(PG_FUNCTION_ARGS)
     }
 
     LWLockRelease(mon_lock);
-
-    PG_RETURN_VOID();
 }
-
 /* Create the histogram for the current query */
 static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist value)
 {
