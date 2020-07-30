@@ -1,6 +1,5 @@
 create extension pg_mon;
 create extension pg_stat_statements;
-set query_monitor.min_duration = 0;
 set pg_stat_statements.track = 'all';
 create table t (i int, j text);
 insert into t values (generate_series(1,10), repeat('bsdshkjd3h', 10));
@@ -33,10 +32,10 @@ select * from t;
  10 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
 (10 rows)
 
-select query, current_expected_rows, current_actual_rows, seq_scans, buckets, frequencies from pg_mon, pg_stat_statements where pg_stat_statements.queryid = pg_mon.queryid and query = 'select * from t';
-      query      | current_expected_rows | current_actual_rows | seq_scans | buckets | frequencies 
------------------+-----------------------+---------------------+-----------+---------+-------------
- select * from t |                    10 |                  10 | {t}       | {5}     | {1}
+select expected_rows, actual_rows, seq_scans, hist_time_ubounds, hist_time_freq from pg_mon where seq_scans IS NOT NULL;
+ expected_rows | actual_rows | seq_scans | hist_time_ubounds | hist_time_freq 
+---------------+-------------+-----------+-------------------+----------------
+            10 |          10 | {t}       | {1}               | {1}
 (1 row)
 
 create index on t(i);
@@ -61,9 +60,9 @@ select count(*) from t where i < 5;
      4
 (1 row)
 
-select query, current_expected_rows, current_actual_rows, seq_scans, index_scans, buckets, frequencies from pg_mon, pg_stat_statements where pg_stat_statements.queryid = pg_mon.queryid and query = 'select count(*) from t where i < $1';
-                query                | current_expected_rows | current_actual_rows | seq_scans | index_scans | buckets | frequencies 
--------------------------------------+-----------------------+---------------------+-----------+-------------+---------+-------------
- select count(*) from t where i < $1 |                     1 |                   1 |           | {t_i_idx}   | {5}     | {1}
+select expected_rows, actual_rows, seq_scans, index_scans, hist_time_ubounds, hist_time_freq from pg_mon where index_scans IS NOT NULL;
+ expected_rows | actual_rows | seq_scans | index_scans | hist_time_ubounds | hist_time_freq 
+---------------+-------------+-----------+-------------+-------------------+----------------
+             1 |           1 |           | {t_i_idx}   | {1}               | {1}
 (1 row)
 
