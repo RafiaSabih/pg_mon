@@ -475,7 +475,6 @@ pgmon_exec_store(QueryDesc *queryDesc)
         int64	queryId = queryDesc->plannedstmt->queryId;
         bool found = false, is_present = false;
         int i, j;
-        MemoryContext current = CurrentMemoryContext;
 
         Assert(queryDesc!= NULL);
 

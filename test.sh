@@ -20,6 +20,6 @@ initdb --pwfile=$pwfile --auth=md5
 
 trap cleanup QUIT TERM EXIT
 
-pg_ctl start -w -o "--shared_preload_libraries=pg_mon, pg_stat_statements --unix_socket_directories=$PGHOST"
+pg_ctl start -w -o "--shared_preload_libraries=pg_mon --unix_socket_directories=$PGHOST"
 
 make USE_PGXS=1 installcheck || diff -u expected/pg_mon.out results/pg_mon.out
