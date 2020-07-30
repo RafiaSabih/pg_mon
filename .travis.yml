@@ -1,0 +1,24 @@
+
+sudo: true
+dist: trusty
+language: c
+compiler: gcc
+matrix:
+  include:
+  - env: PG=11
+  - env: PG=12
+  - env: PG=13
+before_install:
+  - sudo pg_dropcluster
+  - sudo service postgresql stop
+  - sudo sed -ri 's/#(create_main_cluster) .*$/\1 = false/' /etc/postgresql-common/createcluster.conf
+  - if ! sudo -E apt-get -yq --no-install-suggests --no-install-recommends $(travis_apt_get_options) install postgresql-$PG postgresql-server-dev-$PG libevent-dev pv; then echo; fi
+  - sudo pip install --upgrade cpp-coveralls
+script:
+  - |
+    set -e
+    export PATH=/usr/lib/postgresql/$PG/bin:$PATH
+    sudo make USE_PGXS=1 ENABLE_GCOV=1 install
+    bash -x test.sh
+after_success:
+    - coveralls --gcov-options '\-lr'
