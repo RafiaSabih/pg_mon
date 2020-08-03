@@ -144,7 +144,6 @@ static int row_bucket_bounds[ROWNUMBUCKETS] = {
  * current query
  */
 static mon_rec temp_entry;
-static MemoryContext oldcontext = NULL;
 /*
  * shmem_startup hook: allocate and attach to shared memory,
  */
@@ -320,7 +319,6 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
         }
 
         queryDesc->instrument_options |= INSTRUMENT_ROWS;
-        oldcontext = CurrentMemoryContext;
 
         memset(&temp_entry, 0, sizeof(mon_rec));
 
