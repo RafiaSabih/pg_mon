@@ -69,6 +69,21 @@ select expected_rows, actual_rows, seq_scans, index_scans, hist_time_ubounds, hi
              1 |           1 |           | {t_i_idx}   | {1}               | {1}
 (1 row)
 
+--When query changes scan method
+set enable_indexscan = 'off';
+set enable_bitmapscan = 'off';
+select count(*) from t where i < 5;
+ count 
+-------
+     4
+(1 row)
+
+select expected_rows, actual_rows, seq_scans, index_scans, hist_time_ubounds, hist_time_freq from pg_mon where seq_scans IS NOT NULL and index_scans IS NOT NULL;
+ expected_rows | actual_rows | seq_scans | index_scans | hist_time_ubounds | hist_time_freq 
+---------------+-------------+-----------+-------------+-------------------+----------------
+             1 |           1 | {t}       | {t_i_idx}   | {1}               | {2}
+(1 row)
+
 --Join output
 select pg_mon_reset();
  pg_mon_reset 
@@ -100,7 +115,7 @@ select * from t, t2 where t.i = t2.i;
 select expected_rows, actual_rows, seq_scans, index_scans, hash_join_count, hist_time_ubounds, hist_time_freq from pg_mon where hash_join_count > 0;
  expected_rows | actual_rows | seq_scans | index_scans | hash_join_count | hist_time_ubounds | hist_time_freq 
 ---------------+-------------+-----------+-------------+-----------------+-------------------+----------------
-            10 |          10 | {t2}      | {t_i_idx}   |               1 | {1}               | {1}
+            10 |          10 | {t,t2}    |             |               1 | {1}               | {1}
 (1 row)
 
 set enable_hashjoin = 'off';
@@ -134,7 +149,7 @@ select * from t, t2 where t.i = t2.i;
 select expected_rows, actual_rows, seq_scans, index_scans, merge_join_count, hist_time_ubounds, hist_time_freq from pg_mon where merge_join_count > 0;
  expected_rows | actual_rows | seq_scans | index_scans | merge_join_count | hist_time_ubounds | hist_time_freq 
 ---------------+-------------+-----------+-------------+------------------+-------------------+----------------
-            10 |          10 | {t2}      | {t_i_idx}   |                1 | {1}               | {1}
+            10 |          10 | {t,t2}    |             |                1 | {1}               | {1}
 (1 row)
 
 set enable_mergejoin = 'off';
@@ -168,6 +183,11 @@ select * from t, t2 where t.i = t2.i;
 select expected_rows, actual_rows, seq_scans, index_scans, nested_loop_join_count, hist_time_ubounds, hist_time_freq from pg_mon where nested_loop_join_count > 0;
  expected_rows | actual_rows | seq_scans | index_scans | nested_loop_join_count | hist_time_ubounds | hist_time_freq 
 ---------------+-------------+-----------+-------------+------------------------+-------------------+----------------
-            10 |          10 | {t2}      | {t_i_idx}   |                      1 | {1}               | {1}
+            10 |          10 | {t,t2}    |             |                      1 | {1}               | {1}
 (1 row)
 
+--Cleanup
+drop table t;
+drop table t2;
+drop extension pg_stat_statements;
+drop extension pg_mon;

@@ -26,6 +26,12 @@ select pg_stat_statements_reset();
 select count(*) from t where i < 5;
 select expected_rows, actual_rows, seq_scans, index_scans, hist_time_ubounds, hist_time_freq from pg_mon where index_scans IS NOT NULL;
 
+--When query changes scan method
+set enable_indexscan = 'off';
+set enable_bitmapscan = 'off';
+select count(*) from t where i < 5;
+select expected_rows, actual_rows, seq_scans, index_scans, hist_time_ubounds, hist_time_freq from pg_mon where seq_scans IS NOT NULL and index_scans IS NOT NULL;
+
 --Join output
 select pg_mon_reset();
 select pg_stat_statements_reset();
@@ -43,3 +49,9 @@ select pg_mon_reset();
 select pg_stat_statements_reset();
 select * from t, t2 where t.i = t2.i;
 select expected_rows, actual_rows, seq_scans, index_scans, nested_loop_join_count, hist_time_ubounds, hist_time_freq from pg_mon where nested_loop_join_count > 0;
+
+--Cleanup
+drop table t;
+drop table t2;
+drop extension pg_stat_statements;
+drop extension pg_mon;
