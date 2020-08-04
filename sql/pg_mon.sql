@@ -23,16 +23,16 @@ set random_page_cost = 0;
 --Index scan output
 select pg_mon_reset();
 select pg_stat_statements_reset();
-select count(*) from t where i < 5;
+select * from t where i < 5;
 select expected_rows, actual_rows, seq_scans, index_scans, hist_time_ubounds, hist_time_freq from pg_mon where index_scans IS NOT NULL;
 
 --When query changes scan method
 set enable_indexscan = 'off';
-select count(*) from t where i < 5;
+select * from t where i < 5;
 select expected_rows, actual_rows, index_scans, bitmap_scans, hist_time_ubounds, hist_time_freq from pg_mon where index_scans IS NOT NULL and bitmap_scans IS NOT NULL;
 
 set enable_bitmapscan = 'off';
-select count(*) from t where i < 5;
+select * from t where i < 5;
 select expected_rows, actual_rows, seq_scans, index_scans, bitmap_scans, hist_time_ubounds, hist_time_freq from pg_mon where seq_scans IS NOT NULL and index_scans IS NOT NULL;
 
 --Join output
