@@ -119,7 +119,7 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void shmem_shutdown(int code, Datum arg);
 
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
-static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist);
+static void update_histogram(volatile mon_rec *entry, AddHist);
 static void pg_mon_reset_internal(void);
 
 /* Hash table in the shared memory */
@@ -417,8 +417,7 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 static void
 pgmon_plan_store(QueryDesc *queryDesc)
 {
-       int i;
-       mon_rec  *entry;
+        mon_rec  *entry;
 
         /* Safety check... */
         if (!mon_ht)
@@ -435,14 +434,9 @@ pgmon_plan_store(QueryDesc *queryDesc)
         }
 
         /* Update the plan information for the entry */
-        for (i = 0; i < NUMBUCKETS; i++)
-            temp_entry.query_time_buckets[i] = bucket_bounds[i];
-
-        for (i = 0; i < ROWNUMBUCKETS; i++)
-        {
-            temp_entry.actual_row_buckets[i] = row_bucket_bounds[i];
-            temp_entry.est_row_buckets[i] = row_bucket_bounds[i];
-        }
+        memcpy(temp_entry.query_time_buckets, bucket_bounds, sizeof(bucket_bounds));
+        memcpy(temp_entry.actual_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
+        memcpy(temp_entry.est_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
 
         /*
          * If plan information is to be provided immediately, then take the
@@ -455,7 +449,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
                                             HASH_ENTER_NULL, NULL);
            *entry = temp_entry;
 
-            entry = create_histogram(entry, EST_ROWS);
+            update_histogram(entry, EST_ROWS);
             LWLockRelease(mon_lock);
         }
 }
@@ -516,16 +510,16 @@ pgmon_exec_store(QueryDesc *queryDesc)
 
         e->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
         e->first_tuple_time = temp_entry.first_tuple_time;
-        e = create_histogram(e, QUERY_TIME);
+        update_histogram(e, QUERY_TIME);
         e->current_actual_rows = queryDesc->totaltime->ntuples;
-        e = create_histogram(e, ACTUAL_ROWS);
+        update_histogram(e, ACTUAL_ROWS);
 
         /*
          * If planning info is not already updated then only update
          * estimated rows histogram.
          */
         if (!CONFIG_PLAN_INFO_IMMEDIATE)
-            e = create_histogram(e, EST_ROWS);
+            update_histogram(e, EST_ROWS);
 
         /*
          * If this query is already present in the hash table, then update the
@@ -925,8 +919,9 @@ void pg_mon_reset_internal()
 
     LWLockRelease(mon_lock);
 }
-/* Create the histogram for the current query */
-static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist value)
+
+/* Update the histogram for the current query */
+static void update_histogram(volatile mon_rec *entry, AddHist value)
 {
     int i;
     if (value == QUERY_TIME)
@@ -940,7 +935,6 @@ static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist valu
         {
             entry->query_time_buckets[NUMBUCKETS-1] = val;
             entry->query_time_freq[NUMBUCKETS-1]++;
-            return entry;
         }
 
         /* Find the matching bucket */
@@ -966,7 +960,6 @@ static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist valu
         {
             entry->actual_row_buckets[ROWNUMBUCKETS-1] = val;
             entry->actual_row_freq[ROWNUMBUCKETS-1]++;
-            return entry;
         }
 
         /* Find the matching bucket */
@@ -991,7 +984,6 @@ static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist valu
         {
             entry->est_row_buckets[ROWNUMBUCKETS-1] = val;
             entry->est_row_freq[ROWNUMBUCKETS-1]++;
-            return entry;
         }
 
         /* Find the matching bucket */
@@ -1004,6 +996,4 @@ static volatile mon_rec * create_histogram(volatile mon_rec *entry, AddHist valu
             }
         }
     }
-
-    return entry;
 }
