@@ -322,18 +322,15 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
         queryDesc->instrument_options |= INSTRUMENT_ROWS;
 
         memset(&temp_entry, 0, sizeof(mon_rec));
+        temp_entry.queryid = queryDesc->plannedstmt->queryId;
+
+        /* Add the bucket boundaries for the entry */
+        memcpy(temp_entry.query_time_buckets, bucket_bounds, sizeof(bucket_bounds));
+        memcpy(temp_entry.actual_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
+        memcpy(temp_entry.est_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
 
         if (!CONFIG_PLAN_INFO_DISABLE)
             pgmon_plan_store(queryDesc);
-        else
-        {
-            temp_entry.queryid = queryDesc->plannedstmt->queryId;
-
-            /* Add the bucket boundaries for the entry */
-            memcpy(temp_entry.query_time_buckets, bucket_bounds, sizeof(bucket_bounds));
-            memcpy(temp_entry.actual_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
-            memcpy(temp_entry.est_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
-        }
 }
 
 /*
@@ -437,18 +434,11 @@ pgmon_plan_store(QueryDesc *queryDesc)
 
         Assert(queryDesc != NULL);
 
-        temp_entry.queryid = queryDesc->plannedstmt->queryId;
-
         if (!CONFIG_PLAN_INFO_DISABLE)
         {
             plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, &temp_entry);
             temp_entry.current_expected_rows = queryDesc->planstate->plan->plan_rows;
         }
-
-        /* Add the bucket boundaries for the entry */
-        memcpy(temp_entry.query_time_buckets, bucket_bounds, sizeof(bucket_bounds));
-        memcpy(temp_entry.actual_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
-        memcpy(temp_entry.est_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
 
         /*
          * If plan information is to be provided immediately, then take the
