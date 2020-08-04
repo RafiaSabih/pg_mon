@@ -126,14 +126,14 @@ static void pg_mon_reset_internal(void);
 static HTAB *mon_ht;
 
 /* Bucket boundaries for the histogram in ms, from 5 ms to 1 minute */
-static int bucket_bounds[NUMBUCKETS] = {
+static int64 bucket_bounds[NUMBUCKETS] = {
                                 1, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80,
                                 90, 100, 200, 300, 400, 500, 600, 700, 1000,
                                 2000, 3000, 5000, 7000, 10000, 20000, 30000,
                                 50000, 60000
                                 };
 
-static int row_bucket_bounds[ROWNUMBUCKETS] = {
+static int64 row_bucket_bounds[ROWNUMBUCKETS] = {
                                         1, 5, 10, 50, 100, 200, 300, 400, 500,
                                         1000, 2000, 3000, 4000, 5000, 10000,
                                         30000, 50000, 70000, 100000, 1000000
@@ -418,6 +418,7 @@ static void
 pgmon_plan_store(QueryDesc *queryDesc)
 {
         mon_rec  *entry;
+        bool    found = false;
 
         /* Safety check... */
         if (!mon_ht)
@@ -446,8 +447,9 @@ pgmon_plan_store(QueryDesc *queryDesc)
         {
             LWLockAcquire(mon_lock, LW_EXCLUSIVE);
             entry = (mon_rec *) hash_search(mon_ht, &temp_entry.queryid,
-                                            HASH_ENTER_NULL, NULL);
-           *entry = temp_entry;
+                                            HASH_ENTER_NULL, &found);
+            if (!found)
+                *entry = temp_entry;
 
             update_histogram(entry, EST_ROWS);
             LWLockRelease(mon_lock);
@@ -540,6 +542,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
                     if (temp_entry.seq_scans[j] == entry->seq_scans[i])
                     {
                         is_present = true;
+                        break;
                     }
                 }
                 if (!is_present && i < MAX_TABLES)
@@ -556,6 +559,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
                     if (temp_entry.index_scans[j] == entry->index_scans[i])
                     {
                         is_present = true;
+                        break;
                     }
                 }
                 if (!is_present && i < MAX_TABLES)
@@ -572,6 +576,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
                     if (temp_entry.bitmap_scans[j] == entry->bitmap_scans[i])
                     {
                         is_present = true;
+                        break;
                     }
                 }
                 if (!is_present && i < MAX_TABLES)
