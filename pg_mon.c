@@ -457,10 +457,6 @@ pgmon_plan_store(QueryDesc *queryDesc)
         if (CONFIG_PLAN_INFO_IMMEDIATE && !CONFIG_PLAN_INFO_DISABLE)
         {
             entry = create_or_get_entry(temp_entry, temp_entry.queryid, &found);
-            LWLockAcquire(mon_lock, LW_SHARED);
-
-            if (!found)
-                SpinLockInit(&entry->mutex);
 
             e = (volatile mon_rec *) entry;
             SpinLockAcquire(&e->mutex);
@@ -486,10 +482,6 @@ pgmon_exec_store(QueryDesc *queryDesc)
                 return;
 
         entry = create_or_get_entry(temp_entry, queryId, &found);
-        LWLockAcquire(mon_lock, LW_SHARED);
-
-        if (!found)
-            SpinLockInit(&entry->mutex);
 
         e = (volatile mon_rec *) entry;
         SpinLockAcquire(&e->mutex);
@@ -614,9 +606,11 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *fo
         entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, found);
     }
     if (!*found)
+    {
         *entry = temp_entry;
+        SpinLockInit(&entry->mutex);
+    }
 
-    LWLockRelease(mon_lock);
     return entry;
 }
 
