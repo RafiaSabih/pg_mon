@@ -2,8 +2,11 @@ create extension pg_mon;
 create extension pg_stat_statements;
 set pg_stat_statements.track = 'all';
 create table t (i int, j text);
+create table t2 (i int, j text);
 insert into t values (generate_series(1,10), repeat('bsdshkjd3h', 10));
+insert into t2 values (generate_series(1,10), repeat('sdsfefedc', 10));
 analyze t;
+analyze t2;
 -- Seq scan query output
 select pg_mon_reset();
  pg_mon_reset 
@@ -54,15 +57,228 @@ select pg_stat_statements_reset();
  
 (1 row)
 
-select count(*) from t where i < 5;
- count 
--------
-     4
-(1 row)
+select * from t where i < 5;
+ i |                                                  j                                                   
+---+------------------------------------------------------------------------------------------------------
+ 1 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+ 2 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+ 3 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+ 4 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+(4 rows)
 
 select expected_rows, actual_rows, seq_scans, index_scans, hist_time_ubounds, hist_time_freq from pg_mon where index_scans IS NOT NULL;
  expected_rows | actual_rows | seq_scans | index_scans | hist_time_ubounds | hist_time_freq 
 ---------------+-------------+-----------+-------------+-------------------+----------------
-             1 |           1 |           | {t_i_idx}   | {1}               | {1}
+             3 |           4 |           | {t_i_idx}   | {1}               | {1}
 (1 row)
 
+--When query changes scan method
+set enable_indexscan = 'off';
+select * from t where i < 5;
+ i |                                                  j                                                   
+---+------------------------------------------------------------------------------------------------------
+ 1 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+ 2 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+ 3 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+ 4 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+(4 rows)
+
+select expected_rows, actual_rows, index_scans, bitmap_scans, hist_time_ubounds, hist_time_freq from pg_mon where index_scans IS NOT NULL and bitmap_scans IS NOT NULL;
+ expected_rows | actual_rows | index_scans | bitmap_scans | hist_time_ubounds | hist_time_freq 
+---------------+-------------+-------------+--------------+-------------------+----------------
+             3 |           4 | {t_i_idx}   | {t_i_idx}    | {1}               | {2}
+(1 row)
+
+set enable_bitmapscan = 'off';
+select * from t where i < 5;
+ i |                                                  j                                                   
+---+------------------------------------------------------------------------------------------------------
+ 1 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+ 2 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+ 3 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+ 4 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h
+(4 rows)
+
+select expected_rows, actual_rows, seq_scans, index_scans, bitmap_scans, hist_time_ubounds, hist_time_freq from pg_mon where seq_scans IS NOT NULL and index_scans IS NOT NULL;
+ expected_rows | actual_rows | seq_scans | index_scans | bitmap_scans | hist_time_ubounds | hist_time_freq 
+---------------+-------------+-----------+-------------+--------------+-------------------+----------------
+             3 |           4 | {t}       | {t_i_idx}   | {t_i_idx}    | {1}               | {3}
+(1 row)
+
+--Join output
+select pg_mon_reset();
+ pg_mon_reset 
+--------------
+ 
+(1 row)
+
+select pg_stat_statements_reset();
+ pg_stat_statements_reset 
+--------------------------
+ 
+(1 row)
+
+select * from t, t2 where t.i = t2.i;
+ i  |                                                  j                                                   | i  |                                             j                                              
+----+------------------------------------------------------------------------------------------------------+----+--------------------------------------------------------------------------------------------
+  1 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  1 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  2 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  2 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  3 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  3 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  4 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  4 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  5 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  5 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  6 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  6 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  7 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  7 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  8 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  8 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  9 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  9 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+ 10 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h | 10 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+(10 rows)
+
+select expected_rows, actual_rows, seq_scans, index_scans, hash_join_count, hist_time_ubounds, hist_time_freq from pg_mon where hash_join_count > 0;
+ expected_rows | actual_rows | seq_scans | index_scans | hash_join_count | hist_time_ubounds | hist_time_freq 
+---------------+-------------+-----------+-------------+-----------------+-------------------+----------------
+            10 |          10 | {t,t2}    |             |               1 | {1}               | {1}
+(1 row)
+
+set enable_hashjoin = 'off';
+select pg_mon_reset();
+ pg_mon_reset 
+--------------
+ 
+(1 row)
+
+select pg_stat_statements_reset();
+ pg_stat_statements_reset 
+--------------------------
+ 
+(1 row)
+
+select * from t, t2 where t.i = t2.i;
+ i  |                                                  j                                                   | i  |                                             j                                              
+----+------------------------------------------------------------------------------------------------------+----+--------------------------------------------------------------------------------------------
+  1 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  1 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  2 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  2 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  3 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  3 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  4 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  4 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  5 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  5 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  6 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  6 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  7 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  7 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  8 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  8 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  9 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  9 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+ 10 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h | 10 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+(10 rows)
+
+select expected_rows, actual_rows, seq_scans, index_scans, merge_join_count, hist_time_ubounds, hist_time_freq from pg_mon where merge_join_count > 0;
+ expected_rows | actual_rows | seq_scans | index_scans | merge_join_count | hist_time_ubounds | hist_time_freq 
+---------------+-------------+-----------+-------------+------------------+-------------------+----------------
+            10 |          10 | {t,t2}    |             |                1 | {1}               | {1}
+(1 row)
+
+set enable_mergejoin = 'off';
+select pg_mon_reset();
+ pg_mon_reset 
+--------------
+ 
+(1 row)
+
+select pg_stat_statements_reset();
+ pg_stat_statements_reset 
+--------------------------
+ 
+(1 row)
+
+select * from t, t2 where t.i = t2.i;
+ i  |                                                  j                                                   | i  |                                             j                                              
+----+------------------------------------------------------------------------------------------------------+----+--------------------------------------------------------------------------------------------
+  1 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  1 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  2 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  2 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  3 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  3 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  4 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  4 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  5 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  5 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  6 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  6 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  7 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  7 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  8 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  8 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  9 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  9 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+ 10 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h | 10 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+(10 rows)
+
+select expected_rows, actual_rows, seq_scans, index_scans, nested_loop_join_count, hist_time_ubounds, hist_time_freq from pg_mon where nested_loop_join_count > 0;
+ expected_rows | actual_rows | seq_scans | index_scans | nested_loop_join_count | hist_time_ubounds | hist_time_freq 
+---------------+-------------+-----------+-------------+------------------------+-------------------+----------------
+            10 |          10 | {t,t2}    |             |                      1 | {1}               | {1}
+(1 row)
+
+-- Get plan information right after planning phase
+set pg_mon.plan_info_immediate = 'true';
+select pg_mon_reset();
+ pg_mon_reset 
+--------------
+ 
+(1 row)
+
+select pg_stat_statements_reset();
+ pg_stat_statements_reset 
+--------------------------
+ 
+(1 row)
+
+select * from t, t2 where t.i = t2.i;
+ i  |                                                  j                                                   | i  |                                             j                                              
+----+------------------------------------------------------------------------------------------------------+----+--------------------------------------------------------------------------------------------
+  1 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  1 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  2 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  2 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  3 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  3 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  4 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  4 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  5 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  5 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  6 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  6 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  7 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  7 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  8 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  8 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  9 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  9 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+ 10 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h | 10 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+(10 rows)
+
+select expected_rows, actual_rows, seq_scans, index_scans, nested_loop_join_count, hist_time_ubounds, hist_time_freq from pg_mon where nested_loop_join_count > 0;
+ expected_rows | actual_rows | seq_scans | index_scans | nested_loop_join_count | hist_time_ubounds | hist_time_freq 
+---------------+-------------+-----------+-------------+------------------------+-------------------+----------------
+            10 |          10 | {t,t2}    |             |                      1 | {1}               | {1}
+(1 row)
+
+-- Cover the path for skipping plan time information
+set pg_mon.plan_info_disable = 'true';
+select pg_stat_statements_reset();
+ pg_stat_statements_reset 
+--------------------------
+ 
+(1 row)
+
+select pg_mon_reset();
+ pg_mon_reset 
+--------------
+ 
+(1 row)
+
+select * from t, t2 where t.i = t2.i;
+ i  |                                                  j                                                   | i  |                                             j                                              
+----+------------------------------------------------------------------------------------------------------+----+--------------------------------------------------------------------------------------------
+  1 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  1 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  2 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  2 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  3 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  3 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  4 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  4 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  5 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  5 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  6 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  6 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  7 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  7 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  8 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  8 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+  9 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h |  9 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+ 10 | bsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3hbsdshkjd3h | 10 | sdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedcsdsfefedc
+(10 rows)
+
+select expected_rows, actual_rows, seq_scans, index_scans, nested_loop_join_count, hist_time_ubounds, hist_time_freq from pg_mon where expected_rows = 0 and actual_rows = 10;
+ expected_rows | actual_rows | seq_scans | index_scans | nested_loop_join_count | hist_time_ubounds | hist_time_freq 
+---------------+-------------+-----------+-------------+------------------------+-------------------+----------------
+             0 |          10 |           |             |                      0 | {1}               | {1}
+(1 row)
+
+--Cleanup
+drop table t;
+drop table t2;
+drop extension pg_stat_statements;
+drop extension pg_mon;
