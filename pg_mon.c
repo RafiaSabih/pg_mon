@@ -456,6 +456,8 @@ pgmon_plan_store(QueryDesc *queryDesc)
          */
         if (CONFIG_PLAN_INFO_IMMEDIATE && !CONFIG_PLAN_INFO_DISABLE)
         {
+            LWLockAcquire(mon_lock, LW_SHARED);
+
             entry = create_or_get_entry(temp_entry, temp_entry.queryid, &found);
 
             e = (volatile mon_rec *) entry;
@@ -480,6 +482,8 @@ pgmon_exec_store(QueryDesc *queryDesc)
         /* Safety check... */
         if (!mon_ht)
                 return;
+
+        LWLockAcquire(mon_lock, LW_SHARED);
 
         entry = create_or_get_entry(temp_entry, queryId, &found);
 
@@ -573,23 +577,23 @@ pgmon_exec_store(QueryDesc *queryDesc)
         LWLockRelease(mon_lock);
 }
 
+
+/*
+ * Find the required hash table entry if not found then copy the
+ * contents of temp_entry, otherwise return the entry. The caller should have
+ * shared lock on hash_table which could be upgraded to exclusive mode, if new
+ * entry has to be added.
+ */
 static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *found)
 {
     mon_rec *entry = NULL;
 
     /*
-     * Find the required hash table entry if not found then copy the
-     * contents of temp_entry otherwise only update the histograms and copy
-     * the statistics related to current execution of the query.
+     * Check if the number of entries are exceeding the limit. Currently,
+     * we are handling this case by resetting the pg_mon view, but could be
+     * dealt more elegantly later, e.g. as in pg_stat_statetments remove
+     * the least used entries, etc.
      */
-    LWLockAcquire(mon_lock, LW_SHARED);
-
-    /*
-        * Check if the number of entries are exceeding the limit. Currently,
-        * we are handling this case by resetting the pg_mon view, but could be
-        * dealt more elegantly later, e.g. as in pg_stat_statetments remove
-        * the least used entries, etc.
-        */
     while (hash_get_num_entries(mon_ht) >= MON_HT_SIZE)
     {
         LWLockRelease(mon_lock);
