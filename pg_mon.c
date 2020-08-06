@@ -457,6 +457,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
          */
         if (CONFIG_PLAN_INFO_IMMEDIATE && !CONFIG_PLAN_INFO_DISABLE)
         {
+            LWLockAcquire(mon_lock, LW_SHARED);
             entry = create_or_get_entry(temp_entry, temp_entry.queryid);
 
             e = (volatile mon_rec *) entry;
@@ -482,6 +483,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
         if (!mon_ht)
                 return;
 
+        LWLockAcquire(mon_lock, LW_SHARED);
         entry = create_or_get_entry(temp_entry, queryId);
 
         e = (volatile mon_rec *) entry;
@@ -586,7 +588,6 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId)
     mon_rec *entry = NULL;
     bool found = false;
 
-    LWLockAcquire(mon_lock, LW_SHARED);
     entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, &found);
 
     if (!entry)
