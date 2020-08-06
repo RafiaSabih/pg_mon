@@ -375,7 +375,7 @@ pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
 static void
 pgmon_ExecutorFinish(QueryDesc *queryDesc)
 {
-    if (queryDesc->planstate->instrument)
+    if (queryDesc->planstate->instrument && nesting_level == 0)
     {
        temp_entry.first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
     }
