@@ -287,7 +287,7 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
         else
                 standard_ExecutorStart(queryDesc, eflags);
 
-    if (queryDesc->plannedstmt->queryId != UINT64CONST(0))
+    if (queryDesc->plannedstmt->queryId != UINT64CONST(0) && nesting_level == 0)
     {
        /*
         * Set up to track total elapsed time in ExecutorRun.Make sure the space
