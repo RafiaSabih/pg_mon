@@ -462,6 +462,9 @@ pgmon_plan_store(QueryDesc *queryDesc)
 
             entry = create_or_get_entry(temp_entry, temp_entry.queryid, &found);
 
+            if (!found)
+                LWLockAcquire(mon_lock, LW_SHARED);
+
             e = (volatile mon_rec *) entry;
             SpinLockAcquire(&e->mutex);
             update_histogram(e, EST_ROWS);
@@ -486,8 +489,10 @@ pgmon_exec_store(QueryDesc *queryDesc)
                 return;
 
         LWLockAcquire(mon_lock, LW_SHARED);
-
         entry = create_or_get_entry(temp_entry, queryId, &found);
+
+        if (!found)
+            LWLockAcquire(mon_lock, LW_SHARED);
 
         e = (volatile mon_rec *) entry;
         SpinLockAcquire(&e->mutex);
@@ -594,7 +599,9 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *fo
 
     if (!entry)
     {
-        /*
+        LWLockRelease(mon_lock);
+        LWLockAcquire(mon_lock, LW_EXCLUSIVE);
+       /*
         * Check if the number of entries are exceeding the limit. Currently,
         * we are handling this case by resetting the pg_mon view, but could be
         * dealt more elegantly later, e.g. as in pg_stat_statetments remove
@@ -602,13 +609,9 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *fo
         */
         if (hash_get_num_entries(mon_ht) >= MON_HT_SIZE)
         {
-            LWLockRelease(mon_lock);
             pg_mon_reset_internal();
-            LWLockAcquire(mon_lock, LW_SHARED);
         }
 
-        LWLockRelease(mon_lock);
-        LWLockAcquire(mon_lock, LW_EXCLUSIVE);
         entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER, found);
 
         if (!*found)
@@ -616,7 +619,7 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *fo
             *entry = temp_entry;
             SpinLockInit(&entry->mutex);
         }
-
+        LWLockRelease(mon_lock);
     }
 
     return entry;
@@ -929,7 +932,9 @@ pg_mon(PG_FUNCTION_ARGS)
 Datum
 pg_mon_reset(PG_FUNCTION_ARGS)
 {
+    LWLockAcquire(mon_lock, LW_EXCLUSIVE);
     pg_mon_reset_internal();
+    LWLockRelease(mon_lock);
 
     PG_RETURN_VOID();
 }
@@ -940,14 +945,11 @@ void pg_mon_reset_internal()
     HASH_SEQ_STATUS status;
     mon_rec *entry;
 
-    LWLockAcquire(mon_lock, LW_EXCLUSIVE);
     hash_seq_init(&status, mon_ht);
     while ((entry = hash_seq_search(&status)) != NULL)
     {
         hash_search(mon_ht, &entry->queryid, HASH_REMOVE, NULL);
     }
-
-    LWLockRelease(mon_lock);
 }
 
 /* Update the histogram for the current query */
