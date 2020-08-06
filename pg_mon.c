@@ -350,6 +350,7 @@ pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
                         prev_ExecutorRun(queryDesc, direction, count, execute_once);
                 else
                         standard_ExecutorRun(queryDesc, direction, count, execute_once);
+                nesting_level--;
         }
 #if PG_VERSION_NUM < 130000
         PG_CATCH();
@@ -384,6 +385,7 @@ pgmon_ExecutorFinish(QueryDesc *queryDesc)
                         prev_ExecutorFinish(queryDesc);
                 else
                         standard_ExecutorFinish(queryDesc);
+                nesting_level--;
         }
 #if PG_VERSION_NUM < 130000
         PG_CATCH();
