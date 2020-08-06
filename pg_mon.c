@@ -121,7 +121,7 @@ static void shmem_shutdown(int code, Datum arg);
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
 static void update_histogram(volatile mon_rec *entry, AddHist);
 static void pg_mon_reset_internal(void);
-static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *found);
+static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId);
 
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
@@ -287,6 +287,8 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
         else
                 standard_ExecutorStart(queryDesc, eflags);
 
+    if (queryDesc->plannedstmt->queryId != UINT64CONST(0) && nesting_level == 0)
+    {
        /*
         * Set up to track total elapsed time in ExecutorRun.Make sure the space
         * is allocated in the per-query context so it will go away at ExecutorEnd.
@@ -331,6 +333,7 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
         if (!CONFIG_PLAN_INFO_DISABLE)
             pgmon_plan_store(queryDesc);
+    }
 }
 
 /*
@@ -347,6 +350,9 @@ pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
                         prev_ExecutorRun(queryDesc, direction, count, execute_once);
                 else
                         standard_ExecutorRun(queryDesc, direction, count, execute_once);
+#if PG_VERSION_NUM < 130000
+                nesting_level--;
+#endif
         }
 #if PG_VERSION_NUM < 130000
         PG_CATCH();
@@ -369,19 +375,22 @@ pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
 static void
 pgmon_ExecutorFinish(QueryDesc *queryDesc)
 {
-    if (queryDesc->planstate->instrument)
+    if (queryDesc->planstate->instrument && nesting_level == 0)
     {
        temp_entry.first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
     }
-        nesting_level++;
+    nesting_level++;
 
-        PG_TRY();
-        {
-                if (prev_ExecutorFinish)
-                        prev_ExecutorFinish(queryDesc);
-                else
-                        standard_ExecutorFinish(queryDesc);
-        }
+    PG_TRY();
+    {
+            if (prev_ExecutorFinish)
+                    prev_ExecutorFinish(queryDesc);
+            else
+                    standard_ExecutorFinish(queryDesc);
+#if PG_VERSION_NUM < 130000
+            nesting_level--;
+#endif
+    }
 #if PG_VERSION_NUM < 130000
         PG_CATCH();
 	{
@@ -403,7 +412,9 @@ pgmon_ExecutorFinish(QueryDesc *queryDesc)
 static void
 pgmon_ExecutorEnd(QueryDesc *queryDesc)
 {
-        if (queryDesc->totaltime)
+    uint64		queryId = queryDesc->plannedstmt->queryId;
+
+        if (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0)
         {
                 /*
                  * Make sure stats accumulation is done.
@@ -411,9 +422,10 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
                  */
                 InstrEndLoop(queryDesc->totaltime);
                 InstrEndLoop(queryDesc->planstate->instrument);
+
+                /* Save query information */
+                pgmon_exec_store(queryDesc);
         }
-        /* Save query information */
-        pgmon_exec_store(queryDesc);
 
         if (prev_ExecutorEnd)
                 prev_ExecutorEnd(queryDesc);
@@ -426,7 +438,6 @@ pgmon_plan_store(QueryDesc *queryDesc)
 {
         mon_rec  *entry = NULL;
         volatile mon_rec *e;
-        bool    found = false;
 
         /* Safety check... */
         if (!mon_ht)
@@ -447,8 +458,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
         if (CONFIG_PLAN_INFO_IMMEDIATE && !CONFIG_PLAN_INFO_DISABLE)
         {
             LWLockAcquire(mon_lock, LW_SHARED);
-
-            entry = create_or_get_entry(temp_entry, temp_entry.queryid, &found);
+            entry = create_or_get_entry(temp_entry, temp_entry.queryid);
 
             e = (volatile mon_rec *) entry;
             SpinLockAcquire(&e->mutex);
@@ -464,7 +474,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
         mon_rec  *entry = NULL;
         volatile mon_rec *e;
         int64	queryId = queryDesc->plannedstmt->queryId;
-        bool found = false, is_present = false;
+        bool is_present = false;
         int i, j;
 
         Assert(queryDesc!= NULL);
@@ -474,9 +484,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
                 return;
 
         LWLockAcquire(mon_lock, LW_SHARED);
-
-        temp_entry.queryid = queryId;
-        entry = create_or_get_entry(temp_entry, queryId, &found);
+        entry = create_or_get_entry(temp_entry, queryId);
 
         e = (volatile mon_rec *) entry;
         SpinLockAcquire(&e->mutex);
@@ -504,7 +512,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
          *
          * O(tables^2) in current loops may need sort aftert testing.
          */
-        if (found && !CONFIG_PLAN_INFO_DISABLE)
+        if (!CONFIG_PLAN_INFO_DISABLE)
         {
             for (j = 0; j < MAX_TABLES && temp_entry.seq_scans[j] != 0; j++)
             {
@@ -575,35 +583,35 @@ pgmon_exec_store(QueryDesc *queryDesc)
  * shared lock on hash_table which could be upgraded to exclusive mode, if new
  * entry has to be added.
  */
-static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *found)
+static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId)
 {
     mon_rec *entry = NULL;
+    bool found = false;
 
-    /*
-     * Check if the number of entries are exceeding the limit. Currently,
-     * we are handling this case by resetting the pg_mon view, but could be
-     * dealt more elegantly later, e.g. as in pg_stat_statetments remove
-     * the least used entries, etc.
-     */
-    if (hash_get_num_entries(mon_ht) >= MON_HT_SIZE)
-    {
-        LWLockRelease(mon_lock);
-        pg_mon_reset_internal();
-        LWLockAcquire(mon_lock, LW_SHARED);
-    }
-
-    entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, found);
+    entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, &found);
 
     if (!entry)
     {
         LWLockRelease(mon_lock);
         LWLockAcquire(mon_lock, LW_EXCLUSIVE);
-        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, found);
-    }
-    if (!*found)
-    {
-        *entry = temp_entry;
-        SpinLockInit(&entry->mutex);
+       /*
+        * Check if the number of entries are exceeding the limit. Currently,
+        * we are handling this case by resetting the pg_mon view, but could be
+        * dealt more elegantly later, e.g. as in pg_stat_statetments remove
+        * the least used entries, etc.
+        */
+        if (hash_get_num_entries(mon_ht) >= MON_HT_SIZE)
+        {
+            pg_mon_reset_internal();
+        }
+
+        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER, &found);
+
+        if (!found)
+        {
+            *entry = temp_entry;
+            SpinLockInit(&entry->mutex);
+        }
     }
 
     return entry;
@@ -916,7 +924,9 @@ pg_mon(PG_FUNCTION_ARGS)
 Datum
 pg_mon_reset(PG_FUNCTION_ARGS)
 {
+    LWLockAcquire(mon_lock, LW_EXCLUSIVE);
     pg_mon_reset_internal();
+    LWLockRelease(mon_lock);
 
     PG_RETURN_VOID();
 }
@@ -927,14 +937,11 @@ void pg_mon_reset_internal()
     HASH_SEQ_STATUS status;
     mon_rec *entry;
 
-    LWLockAcquire(mon_lock, LW_EXCLUSIVE);
     hash_seq_init(&status, mon_ht);
     while ((entry = hash_seq_search(&status)) != NULL)
     {
         hash_search(mon_ht, &entry->queryid, HASH_REMOVE, NULL);
     }
-
-    LWLockRelease(mon_lock);
 }
 
 /* Update the histogram for the current query */

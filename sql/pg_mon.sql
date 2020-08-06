@@ -1,8 +1,6 @@
 create extension pg_mon;
 create extension pg_stat_statements;
 
-set pg_stat_statements.track = 'all';
-
 create table t (i int, j text);
 create table t2 (i int, j text);
 insert into t values (generate_series(1,10), repeat('bsdshkjd3h', 10));
