@@ -287,6 +287,8 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
         else
                 standard_ExecutorStart(queryDesc, eflags);
 
+    if (queryDesc->plannedstmt->queryId != UINT64CONST(0))
+    {
        /*
         * Set up to track total elapsed time in ExecutorRun.Make sure the space
         * is allocated in the per-query context so it will go away at ExecutorEnd.
@@ -331,6 +333,7 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
         if (!CONFIG_PLAN_INFO_DISABLE)
             pgmon_plan_store(queryDesc);
+    }
 }
 
 /*
@@ -403,7 +406,9 @@ pgmon_ExecutorFinish(QueryDesc *queryDesc)
 static void
 pgmon_ExecutorEnd(QueryDesc *queryDesc)
 {
-        if (queryDesc->totaltime)
+    uint64		queryId = queryDesc->plannedstmt->queryId;
+
+        if (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0)
         {
                 /*
                  * Make sure stats accumulation is done.
@@ -411,9 +416,10 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
                  */
                 InstrEndLoop(queryDesc->totaltime);
                 InstrEndLoop(queryDesc->planstate->instrument);
+
+                /* Save query information */
+                pgmon_exec_store(queryDesc);
         }
-        /* Save query information */
-        pgmon_exec_store(queryDesc);
 
         if (prev_ExecutorEnd)
                 prev_ExecutorEnd(queryDesc);
@@ -475,7 +481,6 @@ pgmon_exec_store(QueryDesc *queryDesc)
 
         LWLockAcquire(mon_lock, LW_SHARED);
 
-        temp_entry.queryid = queryId;
         entry = create_or_get_entry(temp_entry, queryId, &found);
 
         e = (volatile mon_rec *) entry;
@@ -579,31 +584,33 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *fo
 {
     mon_rec *entry = NULL;
 
-    /*
-     * Check if the number of entries are exceeding the limit. Currently,
-     * we are handling this case by resetting the pg_mon view, but could be
-     * dealt more elegantly later, e.g. as in pg_stat_statetments remove
-     * the least used entries, etc.
-     */
-    if (hash_get_num_entries(mon_ht) >= MON_HT_SIZE)
-    {
-        LWLockRelease(mon_lock);
-        pg_mon_reset_internal();
-        LWLockAcquire(mon_lock, LW_SHARED);
-    }
-
     entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, found);
 
     if (!entry)
     {
+        /*
+        * Check if the number of entries are exceeding the limit. Currently,
+        * we are handling this case by resetting the pg_mon view, but could be
+        * dealt more elegantly later, e.g. as in pg_stat_statetments remove
+        * the least used entries, etc.
+        */
+        if (hash_get_num_entries(mon_ht) >= MON_HT_SIZE)
+        {
+            LWLockRelease(mon_lock);
+            pg_mon_reset_internal();
+            LWLockAcquire(mon_lock, LW_SHARED);
+        }
+
         LWLockRelease(mon_lock);
         LWLockAcquire(mon_lock, LW_EXCLUSIVE);
-        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER_NULL, found);
-    }
-    if (!*found)
-    {
-        *entry = temp_entry;
-        SpinLockInit(&entry->mutex);
+        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER, found);
+
+        if (!*found)
+        {
+            *entry = temp_entry;
+            SpinLockInit(&entry->mutex);
+        }
+
     }
 
     return entry;
