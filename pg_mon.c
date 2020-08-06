@@ -350,7 +350,9 @@ pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
                         prev_ExecutorRun(queryDesc, direction, count, execute_once);
                 else
                         standard_ExecutorRun(queryDesc, direction, count, execute_once);
+#if PG_VERSION_NUM < 130000
                 nesting_level--;
+#endif
         }
 #if PG_VERSION_NUM < 130000
         PG_CATCH();
@@ -377,16 +379,18 @@ pgmon_ExecutorFinish(QueryDesc *queryDesc)
     {
        temp_entry.first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
     }
-        nesting_level++;
+    nesting_level++;
 
-        PG_TRY();
-        {
-                if (prev_ExecutorFinish)
-                        prev_ExecutorFinish(queryDesc);
-                else
-                        standard_ExecutorFinish(queryDesc);
-                nesting_level--;
-        }
+    PG_TRY();
+    {
+            if (prev_ExecutorFinish)
+                    prev_ExecutorFinish(queryDesc);
+            else
+                    standard_ExecutorFinish(queryDesc);
+#if PG_VERSION_NUM < 130000
+            nesting_level--;
+#endif
+    }
 #if PG_VERSION_NUM < 130000
         PG_CATCH();
 	{
