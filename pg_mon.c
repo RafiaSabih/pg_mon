@@ -473,6 +473,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
         if (!mon_ht)
                 return;
 
+        temp_entry.queryid = queryId;
         LWLockAcquire(mon_lock, LW_SHARED);
 
         entry = create_or_get_entry(temp_entry, queryId, &found);
@@ -584,7 +585,8 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *fo
      * dealt more elegantly later, e.g. as in pg_stat_statetments remove
      * the least used entries, etc.
      */
-    while (hash_get_num_entries(mon_ht) >= MON_HT_SIZE)
+
+    if (hash_get_num_entries(mon_ht) >= MON_HT_SIZE)
     {
         LWLockRelease(mon_lock);
         pg_mon_reset_internal();
@@ -927,6 +929,7 @@ void pg_mon_reset_internal()
     mon_rec *entry;
 
     LWLockAcquire(mon_lock, LW_EXCLUSIVE);
+
     hash_seq_init(&status, mon_ht);
     while ((entry = hash_seq_search(&status)) != NULL)
     {
