@@ -50,9 +50,9 @@ PG_MODULE_MAGIC;
 /* GUC variables */
 static bool CONFIG_PLAN_INFO_IMMEDIATE = false;
 static bool CONFIG_PLAN_INFO_DISABLE = false;
+static int MON_HT_SIZE = 5000;
 
 #define MON_COLS  20
-#define MON_HT_SIZE      5000
 #define NUMBUCKETS 30
 #define ROWNUMBUCKETS 20
 #define MAX_TABLES 30
@@ -219,6 +219,18 @@ _PG_init(void)
         if (!process_shared_preload_libraries_in_progress)
 		    return;
 
+        DefineCustomIntVariable("pg_mon.max_statements",
+                                "Sets the maximum number of statements tracked by pg_mon.",
+                                NULL,
+                                &MON_HT_SIZE,
+                                5000,
+                                100,
+                                INT_MAX,
+                                PGC_POSTMASTER,
+                                0,
+                                NULL,
+                                NULL,
+                                NULL);
         DefineCustomBoolVariable("pg_mon.plan_info_immediate",
                                                             "Populate the plan time information immediately after planning phase.",
                                                             NULL,
