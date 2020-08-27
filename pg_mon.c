@@ -219,7 +219,7 @@ _PG_init(void)
         if (!process_shared_preload_libraries_in_progress)
 		    return;
 
-        DefineCustomIntVariable("pg_mon.max",
+        DefineCustomIntVariable("pg_mon.max_statements",
                                 "Sets the maximum number of statements tracked by pg_mon.",
                                 NULL,
                                 &MON_HT_SIZE,
