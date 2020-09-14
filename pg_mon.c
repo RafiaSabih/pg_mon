@@ -626,7 +626,10 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
     BitmapIndexScan *bidx;
     Scan *scan;
     RangeTblEntry *rte;
+    ModifyTable *mplan;
     Index relid;
+    ListCell *p;
+
     /* Iterate through the plan to find all the required nodes*/
             if (plan_node != NULL)
             {
@@ -634,8 +637,8 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                 {
                     case T_SeqScan:
                         scan = (Scan *)plan_node;
-                        relid = scan->scanrelid;
-                        rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
+                         relid = scan->scanrelid;
+                         rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
                         for (i = 0; i < MAX_TABLES && entry->seq_scans[i] > 0;
                              i++)
                         {
@@ -725,6 +728,65 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         break;
                     case T_ModifyTable:
                         entry->ModifyTable = true;
+
+                        mplan =(ModifyTable *)plan_node;
+                        rte =  rt_fetch(mplan->nominalRelation, queryDesc->plannedstmt->rtable);
+                        foreach (p, mplan->plans){
+                            Plan *subplan = (Plan *) lfirst (p);
+
+                            if (subplan != NULL){
+                                switch(subplan->type)
+                                {
+                                    case T_SeqScan:
+                                        scan = (Scan *)subplan;
+                                        relid = scan->scanrelid;
+                                        rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
+                                        for (i = 0; i < MAX_TABLES && entry->seq_scans[i] > 0;
+                                            i++)
+                                        {
+                                            if (entry->seq_scans[i] == rte->relid)
+                                            {
+                                                found = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!found && i < MAX_TABLES)
+                                            entry->seq_scans[i] = rte->relid;
+                                        break;
+                                    case T_IndexScan:
+                                    case T_IndexOnlyScan:
+                                        idx = (IndexScan *)subplan;
+                                        for (i = 0; i < MAX_TABLES && entry->index_scans[i] > 0;
+                                            i++)
+                                        {
+                                            if (entry->index_scans[i] == idx->indexid)
+                                            {
+                                                found = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!found && i < MAX_TABLES)
+                                            entry->index_scans[i] = idx->indexid;
+                                        break;
+                                    case T_BitmapIndexScan:
+                                        bidx = (BitmapIndexScan *)subplan;
+                                        for (i = 0; i < MAX_TABLES && entry->bitmap_scans[i] > 0;
+                                            i++)
+                                        {
+                                            if (entry->bitmap_scans[i] == bidx->indexid)
+                                            {
+                                                found = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!found && i < MAX_TABLES)
+                                            entry->bitmap_scans[i] = bidx->indexid;
+                                        break;
+                                    default:
+                                        break;
+                                }
+                            }
+                        }
                         break;
                     default:
                         break;
