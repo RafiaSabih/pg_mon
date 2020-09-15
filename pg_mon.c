@@ -122,6 +122,8 @@ static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
 static void update_histogram(volatile mon_rec *entry, AddHist);
 static void pg_mon_reset_internal(void);
 static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId);
+static void scan_info(Plan *subplan, mon_rec *entry, QueryDesc *queryDesc);
+static const char * scan_string(NodeTag type);
 
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
@@ -620,14 +622,7 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId)
 static void
 plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
 {
-    int i;
-    bool found = false;
-    IndexScan *idx;
-    BitmapIndexScan *bidx;
-    Scan *scan;
-    RangeTblEntry *rte;
     ModifyTable *mplan;
-    Index relid;
     ListCell *p;
 
     /* Iterate through the plan to find all the required nodes*/
@@ -636,82 +631,23 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                 switch(plan_node->type)
                 {
                     case T_SeqScan:
-                        scan = (Scan *)plan_node;
-                         relid = scan->scanrelid;
-                         rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
-                        for (i = 0; i < MAX_TABLES && entry->seq_scans[i] > 0;
-                             i++)
-                        {
-                            if (entry->seq_scans[i] == rte->relid)
-                            {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found && i < MAX_TABLES)
-                            entry->seq_scans[i] = rte->relid;
-                        break;
                     case T_IndexScan:
                     case T_IndexOnlyScan:
-                        idx = (IndexScan *)plan_node;
-                        for (i = 0; i < MAX_TABLES && entry->index_scans[i] > 0;
-                            i++)
-                        {
-                            if (entry->index_scans[i] == idx->indexid)
-                            {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found && i < MAX_TABLES)
-                            entry->index_scans[i] = idx->indexid;
-                        break;
                     case T_BitmapIndexScan:
-                        bidx = (BitmapIndexScan *)plan_node;
-                        for (i = 0; i < MAX_TABLES && entry->bitmap_scans[i] > 0;
-                             i++)
-                        {
-                            if (entry->bitmap_scans[i] == bidx->indexid)
-                            {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found && i < MAX_TABLES)
-                            entry->bitmap_scans[i] = bidx->indexid;
+                        scan_info(plan_node, entry, queryDesc);
                         break;
                     case T_FunctionScan:
-                        namestrcpy(&entry->other_scan, "T_FunctionScan");
-                        break;
                     case T_SampleScan:
-                        namestrcpy(&entry->other_scan, "T_SampleScan");
-                        break;
                     case T_TidScan:
-                        namestrcpy(&entry->other_scan, "T_TidScan");
-                        break;
                     case T_SubqueryScan:
-                        namestrcpy(&entry->other_scan, "T_SubqueryScan");
-                        break;
                     case T_ValuesScan:
-                        namestrcpy(&entry->other_scan, "T_ValuesScan");
-                        break;
                     case T_TableFuncScan:
-                        namestrcpy(&entry->other_scan, "T_TableFuncScan");
-                        break;
                     case T_CteScan:
-                        namestrcpy(&entry->other_scan, "T_CteScan");
-                        break;
                     case T_NamedTuplestoreScan:
-                        namestrcpy(&entry->other_scan, "T_NamedTuplestoreScan");
-                        break;
                     case T_WorkTableScan:
-                        namestrcpy(&entry->other_scan, "T_WorkTableScan");
-                        break;
                     case T_ForeignScan:
-                        namestrcpy(&entry->other_scan, "T_ForeignScan");
-                        break;
                     case T_CustomScan:
-                        namestrcpy(&entry->other_scan, "T_CustomScan");
+                        namestrcpy(&entry->other_scan, scan_string(plan_node->type));
                         break;
                     case T_NestLoop:
                         entry->NestedLoopJoin++;
@@ -728,63 +664,12 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         break;
                     case T_ModifyTable:
                         entry->ModifyTable = true;
-
                         mplan =(ModifyTable *)plan_node;
-                        rte =  rt_fetch(mplan->nominalRelation, queryDesc->plannedstmt->rtable);
                         foreach (p, mplan->plans){
                             Plan *subplan = (Plan *) lfirst (p);
 
                             if (subplan != NULL){
-                                switch(subplan->type)
-                                {
-                                    case T_SeqScan:
-                                        scan = (Scan *)subplan;
-                                        relid = scan->scanrelid;
-                                        rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
-                                        for (i = 0; i < MAX_TABLES && entry->seq_scans[i] > 0;
-                                            i++)
-                                        {
-                                            if (entry->seq_scans[i] == rte->relid)
-                                            {
-                                                found = true;
-                                                break;
-                                            }
-                                        }
-                                        if (!found && i < MAX_TABLES)
-                                            entry->seq_scans[i] = rte->relid;
-                                        break;
-                                    case T_IndexScan:
-                                    case T_IndexOnlyScan:
-                                        idx = (IndexScan *)subplan;
-                                        for (i = 0; i < MAX_TABLES && entry->index_scans[i] > 0;
-                                            i++)
-                                        {
-                                            if (entry->index_scans[i] == idx->indexid)
-                                            {
-                                                found = true;
-                                                break;
-                                            }
-                                        }
-                                        if (!found && i < MAX_TABLES)
-                                            entry->index_scans[i] = idx->indexid;
-                                        break;
-                                    case T_BitmapIndexScan:
-                                        bidx = (BitmapIndexScan *)subplan;
-                                        for (i = 0; i < MAX_TABLES && entry->bitmap_scans[i] > 0;
-                                            i++)
-                                        {
-                                            if (entry->bitmap_scans[i] == bidx->indexid)
-                                            {
-                                                found = true;
-                                                break;
-                                            }
-                                        }
-                                        if (!found && i < MAX_TABLES)
-                                            entry->bitmap_scans[i] = bidx->indexid;
-                                        break;
-                                    default:
-                                        break;
-                                }
+                                scan_info(subplan, entry, queryDesc);
                             }
                         }
                         break;
@@ -796,6 +681,69 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                 if (plan_node->righttree)
                     plan_tree_traversal(queryDesc, plan_node->righttree, entry);
             }
+}
+
+static void
+scan_info(Plan *subplan, mon_rec *entry, QueryDesc *queryDesc)
+{
+    bool found = false;
+    IndexScan *idx;
+    BitmapIndexScan *bidx;
+    Scan *scan;
+    RangeTblEntry *rte;
+    Index relid;
+    int i = 0;
+
+    switch(subplan->type)
+    {
+        case T_SeqScan:
+            scan = (Scan *)subplan;
+            relid = scan->scanrelid;
+            rte = rt_fetch(relid, queryDesc->plannedstmt->rtable);
+            for (i = 0; i < MAX_TABLES && entry->seq_scans[i] > 0;
+                i++)
+            {
+                if (entry->seq_scans[i] == rte->relid)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found && i < MAX_TABLES)
+                entry->seq_scans[i] = rte->relid;
+            break;
+        case T_IndexScan:
+        case T_IndexOnlyScan:
+            idx = (IndexScan *)subplan;
+            for (i = 0; i < MAX_TABLES && entry->index_scans[i] > 0;
+                i++)
+            {
+                if (entry->index_scans[i] == idx->indexid)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found && i < MAX_TABLES)
+                entry->index_scans[i] = idx->indexid;
+            break;
+        case T_BitmapIndexScan:
+            bidx = (BitmapIndexScan *)subplan;
+            for (i = 0; i < MAX_TABLES && entry->bitmap_scans[i] > 0;
+                i++)
+            {
+                if (entry->bitmap_scans[i] == bidx->indexid)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found && i < MAX_TABLES)
+                entry->bitmap_scans[i] = bidx->indexid;
+            break;
+        default:
+            break;
+    }
 }
 
 /*
@@ -993,8 +941,8 @@ pg_mon_reset(PG_FUNCTION_ARGS)
     PG_RETURN_VOID();
 }
 
-static
-void pg_mon_reset_internal()
+static void
+pg_mon_reset_internal()
 {
     HASH_SEQ_STATUS status;
     mon_rec *entry;
@@ -1007,7 +955,8 @@ void pg_mon_reset_internal()
 }
 
 /* Update the histogram for the current query */
-static void update_histogram(volatile mon_rec *entry, AddHist value)
+static void
+update_histogram(volatile mon_rec *entry, AddHist value)
 {
     int i;
     if (value == QUERY_TIME)
@@ -1081,5 +1030,36 @@ static void update_histogram(volatile mon_rec *entry, AddHist value)
                 break;
             }
         }
+    }
+}
+
+static const char *
+scan_string(NodeTag type){
+
+    switch(type){
+        case T_FunctionScan:
+            return "T_FunctionScan";
+        case T_SampleScan:
+            return "T_SampleScan";
+        case T_TidScan:
+            return "T_TidScan";
+        case T_SubqueryScan:
+            return "T_SubqueryScan";
+        case T_ValuesScan:
+            return "T_ValuesScan";
+        case T_TableFuncScan:
+            return "T_TableFuncScan";
+        case T_CteScan:
+            return "T_CteScan";
+        case T_NamedTuplestoreScan:
+            return "T_NamedTuplestoreScan";
+        case T_WorkTableScan:
+            return "T_WorkTableScan";
+        case T_ForeignScan:
+            return "T_ForeignScan";
+        case T_CustomScan:
+            return "T_CustomScan";
+        default:
+            return "";
     }
 }
