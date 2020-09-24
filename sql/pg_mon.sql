@@ -3,8 +3,8 @@ create extension pg_stat_statements;
 
 create table t (i int, j text);
 create table t2 (i int, j text);
-insert into t values (generate_series(1,10), repeat('bsdshkjd3h', 10));
-insert into t2 values (generate_series(1,10), repeat('sdsfefedc', 10));
+insert into t values (generate_series(1,10), repeat('test_pg_mon', 10));
+insert into t2 values (generate_series(1,10), repeat('test_pg_mon', 10));
 analyze t;
 analyze t2;
 
@@ -32,6 +32,35 @@ select expected_rows, actual_rows, index_scans, bitmap_scans, hist_time_ubounds,
 set enable_bitmapscan = 'off';
 select * from t where i < 5;
 select expected_rows, actual_rows, seq_scans, index_scans, bitmap_scans, hist_time_ubounds, hist_time_freq from pg_mon where seq_scans IS NOT NULL and index_scans IS NOT NULL;
+
+--Scan information for update statements
+set enable_indexscan = 'on';
+set enable_bitmapscan = 'on';
+update t set i = 11 where i = 1;
+select seq_scans,  index_scans, update_query from pg_mon where update_query = true;
+select pg_mon_reset();
+select pg_stat_statements_reset();
+
+set enable_indexscan = 'off';
+set enable_bitmapscan = 'off';
+update t set i = 1;
+select seq_scans, index_scans, update_query from pg_mon where update_query = true;
+
+--Scan information for delete statements
+select pg_mon_reset();
+select pg_stat_statements_reset();
+set enable_indexscan = 'on';
+set enable_bitmapscan = 'on';
+delete from t where i < 5;
+select seq_scans, index_scans, update_query from pg_mon where update_query = true;
+select pg_mon_reset();
+select pg_stat_statements_reset();
+
+set enable_indexscan = 'off';
+set enable_bitmapscan = 'off';
+delete from t;
+select seq_scans, index_scans, update_query from pg_mon where update_query = true;
+insert into t values (generate_series(1,10), repeat('bsdshkjd3h', 10));
 
 --Join output
 select pg_mon_reset();
