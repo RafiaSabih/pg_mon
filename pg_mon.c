@@ -318,7 +318,12 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
             MemoryContext oldcxt;
 
             oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
-            queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL, false);
+            #if PG_VERSION_NUM < 140000
+                queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
+            #else
+                queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL, false);
+            #endif
+
             MemoryContextSwitchTo(oldcxt);
         }
         if (queryDesc->planstate->instrument == NULL)
@@ -331,7 +336,12 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
             MemoryContext oldcxt;
 
             oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
-            queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL, false);
+            #if PG_VERSION_NUM < 140000
+                queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL);
+            #else
+                queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL, false);
+            #endif
+
             MemoryContextSwitchTo(oldcxt);
         }
 
