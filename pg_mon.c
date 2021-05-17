@@ -318,7 +318,7 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
             MemoryContext oldcxt;
 
             oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
-            queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
+            queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL, false);
             MemoryContextSwitchTo(oldcxt);
         }
         if (queryDesc->planstate->instrument == NULL)
@@ -331,7 +331,7 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
             MemoryContext oldcxt;
 
             oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
-            queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL);
+            queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL, false);
             MemoryContextSwitchTo(oldcxt);
         }
 
@@ -677,7 +677,7 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                     case T_ModifyTable:
                         entry->ModifyTable = true;
                         mplan =(ModifyTable *)plan_node;
-                        foreach (p, mplan->plans){
+                        foreach (p, mplan->updateColnosLists){
                             Plan *subplan = (Plan *) lfirst (p);
 
                             if (subplan != NULL){
