@@ -687,8 +687,12 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                     case T_ModifyTable:
                         entry->ModifyTable = true;
                         mplan =(ModifyTable *)plan_node;
-                        foreach (p, mplan->updateColnosLists){
-                            Plan *subplan = (Plan *) lfirst (p);
+                        #if PG_VERSION_NUM < 140000
+                            foreach (p, mplan->plans){
+                        #else
+                            foreach (p, mplan->updateColnosLists){
+                        #endif
+                        Plan *subplan = (Plan *) lfirst (p);
 
                             if (subplan != NULL){
                                 scan_info(subplan, entry, queryDesc);
