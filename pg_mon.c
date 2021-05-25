@@ -686,7 +686,7 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         break;
                     case T_ModifyTable:
                         entry->ModifyTable = true;
-                        #if PG_VERSION_NUM < 140000
+#if PG_VERSION_NUM < 140000
                         mplan =(ModifyTable *)plan_node;
                         foreach (p, mplan->plans){
                             Plan *subplan = (Plan *) lfirst (p);
@@ -694,7 +694,7 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                                 scan_info(subplan, entry, queryDesc);
                             }
                         }
-                        #endif
+#endif
                         break;
                     default:
                         break;
