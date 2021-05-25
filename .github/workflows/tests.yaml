@@ -35,7 +35,7 @@ jobs:
       run: |
         VERSION=0.1.0
         curl -sL https://github.com/lesovsky/noisia/releases/download/v$VERSION/noisia_${VERSION}_linux_amd64.tar.gz | tar xzv noisia
-    - name: Compile and install bg_mon
+    - name: Compile and install pg_mon
       run: |
         set -e
         sudo make PG_CONFIG=/usr/lib/postgresql/$PG/bin/pg_config USE_PGXS=1 ENABLE_GCOV=1 install
