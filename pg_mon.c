@@ -644,8 +644,10 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId)
 static void
 plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
 {
+#if PG_VERSION_NUM < 140000
     ModifyTable *mplan;
     ListCell *p;
+#endif
 
     /* Iterate through the plan to find all the required nodes*/
             if (plan_node != NULL)
