@@ -318,7 +318,12 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
             MemoryContext oldcxt;
 
             oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
-            queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
+            #if PG_VERSION_NUM < 140000
+                queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
+            #else
+                queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL, false);
+            #endif
+
             MemoryContextSwitchTo(oldcxt);
         }
         if (queryDesc->planstate->instrument == NULL)
@@ -331,7 +336,12 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
             MemoryContext oldcxt;
 
             oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
-            queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL);
+            #if PG_VERSION_NUM < 140000
+                queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL);
+            #else
+                queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL, false);
+            #endif
+
             MemoryContextSwitchTo(oldcxt);
         }
 
@@ -634,8 +644,10 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId)
 static void
 plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
 {
+#if PG_VERSION_NUM < 140000
     ModifyTable *mplan;
     ListCell *p;
+#endif
 
     /* Iterate through the plan to find all the required nodes*/
             if (plan_node != NULL)
@@ -676,14 +688,15 @@ plan_tree_traversal(QueryDesc *queryDesc, Plan *plan_node, mon_rec *entry)
                         break;
                     case T_ModifyTable:
                         entry->ModifyTable = true;
+#if PG_VERSION_NUM < 140000
                         mplan =(ModifyTable *)plan_node;
                         foreach (p, mplan->plans){
                             Plan *subplan = (Plan *) lfirst (p);
-
                             if (subplan != NULL){
                                 scan_info(subplan, entry, queryDesc);
                             }
                         }
+#endif
                         break;
                     default:
                         break;
