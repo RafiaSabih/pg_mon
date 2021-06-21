@@ -124,6 +124,7 @@ static void pg_mon_reset_internal(void);
 static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId);
 static void scan_info(Plan *subplan, mon_rec *entry, QueryDesc *queryDesc);
 static const char * scan_string(NodeTag type);
+static bool is_new_entry(int64 queryId);
 
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
@@ -469,6 +470,12 @@ pgmon_plan_store(QueryDesc *queryDesc)
 
         Assert(queryDesc != NULL);
 
+        /* If this is a new query, then log the query text */
+        if (is_new_entry(temp_entry.queryid))
+        {
+            elog(LOG, "query --> %s", queryDesc->sourceText);
+        }
+
         if (!CONFIG_PLAN_INFO_DISABLE)
         {
             plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, &temp_entry);
@@ -639,6 +646,16 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId)
     }
 
     return entry;
+}
+
+/* Check if the provided queryId already exists in hash table */
+static bool is_new_entry(int64 queryId){
+
+    bool found = false;
+
+    hash_search(mon_ht, &queryId, HASH_FIND, &found);
+    return !found;
+
 }
 
 static void
