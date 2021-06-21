@@ -121,10 +121,9 @@ static void shmem_shutdown(int code, Datum arg);
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
 static void update_histogram(volatile mon_rec *entry, AddHist);
 static void pg_mon_reset_internal(void);
-static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId);
+static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *found);
 static void scan_info(Plan *subplan, mon_rec *entry, QueryDesc *queryDesc);
 static const char * scan_string(NodeTag type);
-static bool is_new_entry(int64 queryId);
 
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
@@ -463,18 +462,13 @@ pgmon_plan_store(QueryDesc *queryDesc)
 {
         mon_rec  *entry = NULL;
         volatile mon_rec *e;
+        bool found = false;
 
         /* Safety check... */
         if (!mon_ht)
                 return;
 
         Assert(queryDesc != NULL);
-
-        /* If this is a new query, then log the query text */
-        if (is_new_entry(temp_entry.queryid))
-        {
-            elog(LOG, "query --> %s", queryDesc->sourceText);
-        }
 
         if (!CONFIG_PLAN_INFO_DISABLE)
         {
@@ -489,13 +483,19 @@ pgmon_plan_store(QueryDesc *queryDesc)
         if (CONFIG_PLAN_INFO_IMMEDIATE && !CONFIG_PLAN_INFO_DISABLE)
         {
             LWLockAcquire(mon_lock, LW_SHARED);
-            entry = create_or_get_entry(temp_entry, temp_entry.queryid);
+            entry = create_or_get_entry(temp_entry, temp_entry.queryid, &found);
 
             e = (volatile mon_rec *) entry;
             SpinLockAcquire(&e->mutex);
             update_histogram(e, EST_ROWS);
             SpinLockRelease(&e->mutex);
             LWLockRelease(mon_lock);
+
+            /* If this is a new query, then log the query text */
+            if (!found)
+            {
+                elog(LOG, "query --> %s", queryDesc->sourceText);
+            }
         }
 }
 
@@ -505,7 +505,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
         mon_rec  *entry = NULL;
         volatile mon_rec *e;
         int64	queryId = queryDesc->plannedstmt->queryId;
-        bool is_present = false;
+        bool is_present = false, found = false;
         int i, j;
 
         Assert(queryDesc!= NULL);
@@ -515,7 +515,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
                 return;
 
         LWLockAcquire(mon_lock, LW_SHARED);
-        entry = create_or_get_entry(temp_entry, queryId);
+        entry = create_or_get_entry(temp_entry, queryId, &found);
 
         e = (volatile mon_rec *) entry;
         SpinLockAcquire(&e->mutex);
@@ -605,6 +605,13 @@ pgmon_exec_store(QueryDesc *queryDesc)
 
         SpinLockRelease(&e->mutex);
         LWLockRelease(mon_lock);
+
+        /* If this is a new query, then log the query text */
+        if (!found)
+        {
+            elog(LOG, "query --> %s", queryDesc->sourceText);
+        }
+
 }
 
 
@@ -614,10 +621,9 @@ pgmon_exec_store(QueryDesc *queryDesc)
  * shared lock on hash_table which could be upgraded to exclusive mode, if new
  * entry has to be added.
  */
-static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId)
+static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *found)
 {
     mon_rec *entry = NULL;
-    bool found = false;
 
     entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, &found);
 
@@ -646,16 +652,6 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId)
     }
 
     return entry;
-}
-
-/* Check if the provided queryId already exists in hash table */
-static bool is_new_entry(int64 queryId){
-
-    bool found = false;
-
-    hash_search(mon_ht, &queryId, HASH_FIND, &found);
-    return !found;
-
 }
 
 static void
