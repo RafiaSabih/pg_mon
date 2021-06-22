@@ -1,5 +1,6 @@
 create extension pg_mon;
 create extension pg_stat_statements;
+set pg_mon.log_query = false;
 
 create table t (i int, j text);
 create table t2 (i int, j text);

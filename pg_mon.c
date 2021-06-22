@@ -50,6 +50,7 @@ PG_MODULE_MAGIC;
 /* GUC variables */
 static bool CONFIG_PLAN_INFO_IMMEDIATE = false;
 static bool CONFIG_PLAN_INFO_DISABLE = false;
+static bool CONFIG_LOG_QUERY = true;
 static int MON_HT_SIZE = 5000;
 
 #define MON_COLS  20
@@ -248,6 +249,16 @@ _PG_init(void)
                                                             NULL,
                                                             &CONFIG_PLAN_INFO_DISABLE,
                                                             CONFIG_PLAN_INFO_DISABLE,
+                                                            PGC_SUSET,
+                                                            0,
+                                                            NULL,
+                                                            NULL,
+                                                            NULL);
+        DefineCustomBoolVariable("pg_mon.log_query",
+                                                            "Log the new query.",
+                                                            NULL,
+                                                            &CONFIG_LOG_QUERY,
+                                                            CONFIG_LOG_QUERY,
                                                             PGC_SUSET,
                                                             0,
                                                             NULL,
@@ -492,9 +503,9 @@ pgmon_plan_store(QueryDesc *queryDesc)
             LWLockRelease(mon_lock);
 
             /* If this is a new query, then log the query text */
-            if (!found)
+            if (CONFIG_LOG_QUERY && !found)
             {
-                elog(LOG, "query --> %s", queryDesc->sourceText);
+                elog(LOG, "%s", queryDesc->sourceText);
             }
         }
 }
@@ -607,7 +618,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
         LWLockRelease(mon_lock);
 
         /* If this is a new query, then log the query text */
-        if (!found)
+        if (CONFIG_LOG_QUERY && !found)
         {
             elog(LOG, "query --> %s", queryDesc->sourceText);
         }
@@ -625,7 +636,7 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *fo
 {
     mon_rec *entry = NULL;
 
-    entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, &found);
+    entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_FIND, found);
 
     if (!entry)
     {
@@ -642,7 +653,7 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, bool *fo
             pg_mon_reset_internal();
         }
 
-        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER, &found);
+        entry = (mon_rec *) hash_search(mon_ht, &queryId, HASH_ENTER, found);
 
         if (!found)
         {
