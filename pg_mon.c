@@ -501,12 +501,6 @@ pgmon_plan_store(QueryDesc *queryDesc)
             update_histogram(e, EST_ROWS);
             SpinLockRelease(&e->mutex);
             LWLockRelease(mon_lock);
-
-            /* If this is a new query, then log the query text */
-            if (CONFIG_LOG_QUERY && !found)
-            {
-                elog(LOG, "%s", queryDesc->sourceText);
-            }
         }
 }
 
@@ -620,11 +614,10 @@ pgmon_exec_store(QueryDesc *queryDesc)
         /* If this is a new query, then log the query text */
         if (CONFIG_LOG_QUERY && !found)
         {
-            elog(LOG, "query --> %s", queryDesc->sourceText);
+            elog(LOG, "%s", queryDesc->sourceText);
         }
 
 }
-
 
 /*
  * Find the required hash table entry if not found then copy the
