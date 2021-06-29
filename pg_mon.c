@@ -50,7 +50,7 @@ PG_MODULE_MAGIC;
 /* GUC variables */
 static bool CONFIG_PLAN_INFO_IMMEDIATE = false;
 static bool CONFIG_PLAN_INFO_DISABLE = false;
-static bool CONFIG_LOG_QUERY = true;
+static bool CONFIG_LOG_NEW_QUERY = true;
 static int MON_HT_SIZE = 5000;
 
 #define MON_COLS  20
@@ -254,11 +254,11 @@ _PG_init(void)
                                                             NULL,
                                                             NULL,
                                                             NULL);
-        DefineCustomBoolVariable("pg_mon.log_query",
+        DefineCustomBoolVariable("pg_mon.log_new_query",
                                                             "Log the new query.",
                                                             NULL,
-                                                            &CONFIG_LOG_QUERY,
-                                                            CONFIG_LOG_QUERY,
+                                                            &CONFIG_LOG_NEW_QUERY,
+                                                            CONFIG_LOG_NEW_QUERY,
                                                             PGC_SUSET,
                                                             0,
                                                             NULL,
@@ -647,9 +647,9 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDes
             SpinLockInit(&entry->mutex);
 
             /* Since this is a new query,  log the query text */
-            if (CONFIG_LOG_QUERY)
+            if (CONFIG_LOG_NEW_QUERY)
             {
-                elog(LOG, "%s", queryDesc->sourceText);
+                ereport(LOG, (errmsg("Logging new query visa pg_mon \n %s", queryDesc->sourceText)));
             }
         }
     }
