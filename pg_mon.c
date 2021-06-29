@@ -649,7 +649,7 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDes
             /* Since this is a new query,  log the query text */
             if (CONFIG_LOG_NEW_QUERY)
             {
-                ereport(LOG, (errmsg("Logging new query visa pg_mon \n %s", queryDesc->sourceText)));
+                ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryDesc->sourceText)));
             }
         }
     }
