@@ -117,11 +117,17 @@ static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
 static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
 static void pgmon_exec_store(QueryDesc *queryDesc);
+#if PG_VERSION_NUM > 130000
 static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 									ProcessUtilityContext context, ParamListInfo params,
 									QueryEnvironment *queryEnv,
 									DestReceiver *dest, QueryCompletion *qc);
-
+#else
+static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
+						   ProcessUtilityContext context, ParamListInfo params,
+						   QueryEnvironment *queryEnv,
+						   DestReceiver *dest, char *completionTag);
+#endif
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void shmem_shutdown(int code, Datum arg);
@@ -480,6 +486,7 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 /*
  * ProcessUtility hook
  */
+#if PG_VERSION_NUM > 130000
 static void
 pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 									ProcessUtilityContext context, ParamListInfo params,
@@ -498,7 +505,25 @@ pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
         standard_ProcessUtility(pstmt, queryString, context, params, queryEnv,
                                 dest, qc);
 }
+#else
+static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
+						   ProcessUtilityContext context, ParamListInfo params,
+						   QueryEnvironment *queryEnv,
+						   DestReceiver *dest, char *completionTag)
+{
+    if (CONFIG_LOG_NEW_QUERY)
+    {
+        ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
+    }
 
+    if (prev_ProcessUtility)
+        prev_ProcessUtility(pstmt, queryString, context, params,
+                            queryEnv, dest, completionTag);
+    else
+        standard_ProcessUtility(pstmt, queryString, context,
+                                params, queryEnv, dest, completionTag);
+}
+#endif
 static void
 pgmon_plan_store(QueryDesc *queryDesc)
 {
