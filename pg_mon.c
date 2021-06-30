@@ -117,16 +117,22 @@ static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
 static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
 static void pgmon_exec_store(QueryDesc *queryDesc);
-#if PG_VERSION_NUM > 130000
+#if PG_VERSION_NUM < 130000
+static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
+						   ProcessUtilityContext context, ParamListInfo params,
+						   QueryEnvironment *queryEnv,
+						   DestReceiver *dest, char *completionTag);
+#elif PG_VERSION_NUM >= 130000 && PG_VERSION_NUM < 140000
 static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 									ProcessUtilityContext context, ParamListInfo params,
 									QueryEnvironment *queryEnv,
 									DestReceiver *dest, QueryCompletion *qc);
 #else
 static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
-						   ProcessUtilityContext context, ParamListInfo params,
-						   QueryEnvironment *queryEnv,
-						   DestReceiver *dest, char *completionTag);
+									bool readOnlyTree,
+                                    ProcessUtilityContext context, ParamListInfo params,
+									QueryEnvironment *queryEnv,
+                                    DestReceiver *dest, QueryCompletion *qc);
 #endif
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
@@ -486,26 +492,7 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 /*
  * ProcessUtility hook
  */
-#if PG_VERSION_NUM > 130000
-static void
-pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
-									ProcessUtilityContext context, ParamListInfo params,
-									QueryEnvironment *queryEnv,
-									DestReceiver *dest, QueryCompletion *qc)
-{
-	if (CONFIG_LOG_NEW_QUERY)
-    {
-        ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
-    }
-
-    if (prev_ProcessUtility)
-        prev_ProcessUtility(pstmt, queryString, context, params, queryEnv,
-                            dest, qc);
-    else
-        standard_ProcessUtility(pstmt, queryString, context, params, queryEnv,
-                                dest, qc);
-}
-#else
+#if PG_VERSION_NUM < 130000
 static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 						   ProcessUtilityContext context, ParamListInfo params,
 						   QueryEnvironment *queryEnv,
@@ -517,13 +504,51 @@ static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
     }
 
     if (prev_ProcessUtility)
-        prev_ProcessUtility(pstmt, queryString, context, params,
-                            queryEnv, dest, completionTag);
+        prev_ProcessUtility(pstmt, queryString, context,
+                            params, queryEnv, dest, completionTag);
     else
         standard_ProcessUtility(pstmt, queryString, context,
                                 params, queryEnv, dest, completionTag);
 }
+#elif PG_VERSION_NUM >= 130000 && PG_VERSION_NUM < 140000
+static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
+									ProcessUtilityContext context, ParamListInfo params,
+									QueryEnvironment *queryEnv,
+									DestReceiver *dest, QueryCompletion *qc)
+{
+    if (CONFIG_LOG_NEW_QUERY)
+    {
+        ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
+    }
+
+    if (prev_ProcessUtility)
+        prev_ProcessUtility(pstmt, queryString, context,
+                            params, queryEnv, dest, qc);
+    else
+        standard_ProcessUtility(pstmt, queryString, context,
+                                params, queryEnv, dest, qc);
+}
+#else
+static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
+									bool readOnlyTree,
+                                    ProcessUtilityContext context, ParamListInfo params,
+									QueryEnvironment *queryEnv,
+                                    DestReceiver *dest, QueryCompletion *qc)
+{
+    if (CONFIG_LOG_NEW_QUERY)
+    {
+        ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
+    }
+
+    if (prev_ProcessUtility)
+        prev_ProcessUtility(pstmt, queryString, readOnlyTree, context,
+                            params, queryEnv, dest, qc);
+    else
+        standard_ProcessUtility(pstmt, queryString, readOnlyTree, context,
+                                params, queryEnv, dest, qc);
+}
 #endif
+
 static void
 pgmon_plan_store(QueryDesc *queryDesc)
 {
