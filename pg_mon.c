@@ -38,6 +38,8 @@
 #include "parser/parsetree.h"
 #include "storage/spin.h"
 
+#include "tcop/utility.h"
+
 
 Datum		pg_mon(PG_FUNCTION_ARGS);
 Datum		pg_mon_reset(PG_FUNCTION_ARGS);
@@ -106,6 +108,7 @@ static ExecutorStart_hook_type prev_ExecutorStart = NULL;
 static ExecutorRun_hook_type prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
 static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
+static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 
 static void pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
@@ -114,6 +117,10 @@ static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
 static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
 static void pgmon_exec_store(QueryDesc *queryDesc);
+static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
+									ProcessUtilityContext context, ParamListInfo params,
+									QueryEnvironment *queryEnv,
+									DestReceiver *dest, QueryCompletion *qc);
 
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
@@ -283,6 +290,8 @@ _PG_init(void)
         ExecutorFinish_hook = pgmon_ExecutorFinish;
         prev_ExecutorEnd = ExecutorEnd_hook;
         ExecutorEnd_hook = pgmon_ExecutorEnd;
+        prev_ProcessUtility = ProcessUtility_hook;
+	    ProcessUtility_hook = pgmon_ProcessUtility;
 }
 
 /*
@@ -297,7 +306,7 @@ _PG_fini(void)
         ExecutorRun_hook = prev_ExecutorRun;
         ExecutorFinish_hook = prev_ExecutorFinish;
         ExecutorEnd_hook = prev_ExecutorEnd;
-
+        ProcessUtility_hook = prev_ProcessUtility;
 }
 
 
@@ -449,23 +458,45 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 {
     uint64		queryId = queryDesc->plannedstmt->queryId;
 
-        if (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0)
-        {
-                /*
-                 * Make sure stats accumulation is done.
-                 * (Note: it's okay if several levels of hook all do this.)
-                 */
-                InstrEndLoop(queryDesc->totaltime);
-                InstrEndLoop(queryDesc->planstate->instrument);
+    if (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0)
+    {
+            /*
+             * Make sure stats accumulation is done.
+             * (Note: it's okay if several levels of hook all do this.)
+             */
+            InstrEndLoop(queryDesc->totaltime);
+            InstrEndLoop(queryDesc->planstate->instrument);
 
-                /* Save query information */
-                pgmon_exec_store(queryDesc);
-        }
+            /* Save query information */
+            pgmon_exec_store(queryDesc);
+    }
 
-        if (prev_ExecutorEnd)
-                prev_ExecutorEnd(queryDesc);
-        else
-                standard_ExecutorEnd(queryDesc);
+    if (prev_ExecutorEnd)
+            prev_ExecutorEnd(queryDesc);
+    else
+            standard_ExecutorEnd(queryDesc);
+}
+
+/*
+ * ProcessUtility hook
+ */
+static void
+pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
+									ProcessUtilityContext context, ParamListInfo params,
+									QueryEnvironment *queryEnv,
+									DestReceiver *dest, QueryCompletion *qc)
+{
+	if (CONFIG_LOG_NEW_QUERY)
+    {
+        ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
+    }
+
+    if (prev_ProcessUtility)
+        prev_ProcessUtility(pstmt, queryString, context, params, queryEnv,
+                            dest, qc);
+    else
+        standard_ProcessUtility(pstmt, queryString, context, params, queryEnv,
+                                dest, qc);
 }
 
 static void
