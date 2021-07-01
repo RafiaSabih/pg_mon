@@ -537,7 +537,14 @@ static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 {
     if (CONFIG_LOG_NEW_QUERY)
     {
-        ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
+        switch (nodeTag(pstmt->utilityStmt))
+        {
+            case T_AlterRoleStmt:
+                break;
+            default:
+                ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
+                break;
+        }
     }
 
     if (prev_ProcessUtility)
