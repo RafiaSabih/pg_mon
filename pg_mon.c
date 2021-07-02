@@ -505,10 +505,9 @@ static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
             case T_AlterRoleStmt:
                 break;
             default:
-                ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
+                ereport(LOG, (errmsg("%s", queryString), errhint("log from pg_mon")));
                 break;
         }
-        ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
     }
 
     if (prev_ProcessUtility)
@@ -531,10 +530,9 @@ static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
             case T_AlterRoleStmt:
                 break;
             default:
-                ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
+                ereport(LOG, (errmsg("%s", queryString), errhint("log from pg_mon")));
                 break;
         }
-        ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
     }
 
     if (prev_ProcessUtility)
@@ -558,11 +556,10 @@ static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
             case T_AlterRoleStmt:
                 break;
             default:
-                ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryString)));
+                ereport(LOG, (errmsg("%s", queryString), errhint("log from pg_mon")));
                 break;
         }
     }
-
     if (prev_ProcessUtility)
         prev_ProcessUtility(pstmt, queryString, readOnlyTree, context,
                             params, queryEnv, dest, qc);
@@ -753,7 +750,7 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDes
             /* Since this is a new query,  log the query text */
             if (CONFIG_LOG_NEW_QUERY)
             {
-                ereport(LOG, (errmsg("Logging new query via pg_mon \n %s", queryDesc->sourceText)));
+                ereport(LOG, (errmsg("%s", queryDesc->sourceText), errhint("log from pg_mon")));
             }
         }
     }
