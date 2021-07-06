@@ -118,21 +118,49 @@ static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
 static void pgmon_exec_store(QueryDesc *queryDesc);
 #if PG_VERSION_NUM < 130000
-static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
+static void PU_hook(PlannedStmt *pstmt, const char *queryString,
 						   ProcessUtilityContext context, ParamListInfo params,
 						   QueryEnvironment *queryEnv,
 						   DestReceiver *dest, char *completionTag);
+#define _PU_HOOK \
+    static void PU_hook(PlannedStmt *pstmt, const char *queryString,\
+						   ProcessUtilityContext context, ParamListInfo params, \
+						   QueryEnvironment *queryEnv, \
+						   DestReceiver *dest, char *completionTag)
+#define _prev_hook \
+        prev_ProcessUtility(pstmt, queryString, context, params, queryEnv, dest, completionTag)
+#define _standard_ProcessUtility \
+        standard_ProcessUtility(pstmt, queryString, context, params, queryEnv, dest, completionTag)
 #elif PG_VERSION_NUM >= 130000 && PG_VERSION_NUM < 140000
-static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
+static void PU_hook(PlannedStmt *pstmt, const char *queryString,
 									ProcessUtilityContext context, ParamListInfo params,
 									QueryEnvironment *queryEnv,
 									DestReceiver *dest, QueryCompletion *qc);
+
+#define _PU_HOOK \
+    static void PU_hook(PlannedStmt *pstmt, const char *queryString,\
+						   ProcessUtilityContext context, ParamListInfo params, \
+						   QueryEnvironment *queryEnv, \
+						   DestReceiver *dest, QueryCompletion *qc)
+#define _prev_hook \
+        prev_ProcessUtility(pstmt, queryString, context, params, queryEnv, dest, qc)
+#define _standard_ProcessUtility \
+        standard_ProcessUtility(pstmt, queryString, context, params, queryEnv, dest, qc)
 #else
-static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
+static void PU_hook(PlannedStmt *pstmt, const char *queryString,
 									bool readOnlyTree,
                                     ProcessUtilityContext context, ParamListInfo params,
 									QueryEnvironment *queryEnv,
                                     DestReceiver *dest, QueryCompletion *qc);
+#define _PU_HOOK \
+    static void PU_hook(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, \
+						   ProcessUtilityContext context, ParamListInfo params, \
+						   QueryEnvironment *queryEnv, \
+						   DestReceiver *dest, QueryCompletion *qc)
+#define _prev_hook \
+        prev_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
+#define _standard_ProcessUtility \
+        standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
 #endif
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
@@ -303,7 +331,7 @@ _PG_init(void)
         prev_ExecutorEnd = ExecutorEnd_hook;
         ExecutorEnd_hook = pgmon_ExecutorEnd;
         prev_ProcessUtility = ProcessUtility_hook;
-	    ProcessUtility_hook = pgmon_ProcessUtility;
+	    ProcessUtility_hook = PU_hook;
 }
 
 /*
@@ -492,62 +520,7 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 /*
  * ProcessUtility hook
  */
-#if PG_VERSION_NUM < 130000
-static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
-						   ProcessUtilityContext context, ParamListInfo params,
-						   QueryEnvironment *queryEnv,
-						   DestReceiver *dest, char *completionTag)
-{
-    if (CONFIG_LOG_NEW_QUERY)
-    {
-        switch (nodeTag(pstmt->utilityStmt))
-        {
-            case T_AlterRoleStmt:
-                break;
-            default:
-                ereport(LOG, (errmsg("%s", queryString), errhint("log from pg_mon")));
-                break;
-        }
-    }
-
-    if (prev_ProcessUtility)
-        prev_ProcessUtility(pstmt, queryString, context,
-                            params, queryEnv, dest, completionTag);
-    else
-        standard_ProcessUtility(pstmt, queryString, context,
-                                params, queryEnv, dest, completionTag);
-}
-#elif PG_VERSION_NUM >= 130000 && PG_VERSION_NUM < 140000
-static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
-									ProcessUtilityContext context, ParamListInfo params,
-									QueryEnvironment *queryEnv,
-									DestReceiver *dest, QueryCompletion *qc)
-{
-    if (CONFIG_LOG_NEW_QUERY)
-    {
-        switch (nodeTag(pstmt->utilityStmt))
-        {
-            case T_AlterRoleStmt:
-                break;
-            default:
-                ereport(LOG, (errmsg("%s", queryString), errhint("log from pg_mon")));
-                break;
-        }
-    }
-
-    if (prev_ProcessUtility)
-        prev_ProcessUtility(pstmt, queryString, context,
-                            params, queryEnv, dest, qc);
-    else
-        standard_ProcessUtility(pstmt, queryString, context,
-                                params, queryEnv, dest, qc);
-}
-#else
-static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
-									bool readOnlyTree,
-                                    ProcessUtilityContext context, ParamListInfo params,
-									QueryEnvironment *queryEnv,
-                                    DestReceiver *dest, QueryCompletion *qc)
+_PU_HOOK
 {
     if (CONFIG_LOG_NEW_QUERY)
     {
@@ -561,13 +534,14 @@ static void pgmon_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
         }
     }
     if (prev_ProcessUtility)
-        prev_ProcessUtility(pstmt, queryString, readOnlyTree, context,
-                            params, queryEnv, dest, qc);
+    {
+        _prev_hook;
+    }
     else
-        standard_ProcessUtility(pstmt, queryString, readOnlyTree, context,
-                                params, queryEnv, dest, qc);
+    {
+        _standard_ProcessUtility;
+    }
 }
-#endif
 
 static void
 pgmon_plan_store(QueryDesc *queryDesc)
