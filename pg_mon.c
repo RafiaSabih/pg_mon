@@ -529,7 +529,7 @@ _PU_HOOK
             case T_AlterRoleStmt:
                 break;
             default:
-                ereport(LOG, (errmsg("%s", queryString), errhint("log from pg_mon")));
+                ereport(LOG, (errmsg("new query registered from pg_mon"), errhint("%s", queryString)));
                 break;
         }
     }
@@ -724,7 +724,7 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDes
             /* Since this is a new query,  log the query text */
             if (CONFIG_LOG_NEW_QUERY)
             {
-                ereport(LOG, (errmsg("%s", queryDesc->sourceText), errhint("log from pg_mon")));
+                ereport(LOG, (errmsg("new query registered from pg_mon"), errhint("%s", queryDesc->sourceText)));
             }
         }
     }
