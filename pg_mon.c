@@ -38,6 +38,8 @@
 #include "parser/parsetree.h"
 #include "storage/spin.h"
 
+#include "tcop/utility.h"
+
 
 Datum		pg_mon(PG_FUNCTION_ARGS);
 Datum		pg_mon_reset(PG_FUNCTION_ARGS);
@@ -50,6 +52,7 @@ PG_MODULE_MAGIC;
 /* GUC variables */
 static bool CONFIG_PLAN_INFO_IMMEDIATE = false;
 static bool CONFIG_PLAN_INFO_DISABLE = false;
+static bool CONFIG_LOG_NEW_QUERY = true;
 static int MON_HT_SIZE = 5000;
 
 #define MON_COLS  20
@@ -105,6 +108,7 @@ static ExecutorStart_hook_type prev_ExecutorStart = NULL;
 static ExecutorRun_hook_type prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
 static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
+static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 
 static void pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
@@ -113,7 +117,51 @@ static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
 static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
 static void pgmon_exec_store(QueryDesc *queryDesc);
+#if PG_VERSION_NUM < 130000
+static void PU_hook(PlannedStmt *pstmt, const char *queryString,
+						   ProcessUtilityContext context, ParamListInfo params,
+						   QueryEnvironment *queryEnv,
+						   DestReceiver *dest, char *completionTag);
+#define _PU_HOOK \
+    static void PU_hook(PlannedStmt *pstmt, const char *queryString,\
+						   ProcessUtilityContext context, ParamListInfo params, \
+						   QueryEnvironment *queryEnv, \
+						   DestReceiver *dest, char *completionTag)
+#define _prev_hook \
+        prev_ProcessUtility(pstmt, queryString, context, params, queryEnv, dest, completionTag)
+#define _standard_ProcessUtility \
+        standard_ProcessUtility(pstmt, queryString, context, params, queryEnv, dest, completionTag)
+#elif PG_VERSION_NUM >= 130000 && PG_VERSION_NUM < 140000
+static void PU_hook(PlannedStmt *pstmt, const char *queryString,
+									ProcessUtilityContext context, ParamListInfo params,
+									QueryEnvironment *queryEnv,
+									DestReceiver *dest, QueryCompletion *qc);
 
+#define _PU_HOOK \
+    static void PU_hook(PlannedStmt *pstmt, const char *queryString,\
+						   ProcessUtilityContext context, ParamListInfo params, \
+						   QueryEnvironment *queryEnv, \
+						   DestReceiver *dest, QueryCompletion *qc)
+#define _prev_hook \
+        prev_ProcessUtility(pstmt, queryString, context, params, queryEnv, dest, qc)
+#define _standard_ProcessUtility \
+        standard_ProcessUtility(pstmt, queryString, context, params, queryEnv, dest, qc)
+#else
+static void PU_hook(PlannedStmt *pstmt, const char *queryString,
+									bool readOnlyTree,
+                                    ProcessUtilityContext context, ParamListInfo params,
+									QueryEnvironment *queryEnv,
+                                    DestReceiver *dest, QueryCompletion *qc);
+#define _PU_HOOK \
+    static void PU_hook(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, \
+						   ProcessUtilityContext context, ParamListInfo params, \
+						   QueryEnvironment *queryEnv, \
+						   DestReceiver *dest, QueryCompletion *qc)
+#define _prev_hook \
+        prev_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
+#define _standard_ProcessUtility \
+        standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
+#endif
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void shmem_shutdown(int code, Datum arg);
@@ -121,7 +169,7 @@ static void shmem_shutdown(int code, Datum arg);
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
 static void update_histogram(volatile mon_rec *entry, AddHist);
 static void pg_mon_reset_internal(void);
-static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId);
+static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDesc *queryDesc);
 static void scan_info(Plan *subplan, mon_rec *entry, QueryDesc *queryDesc);
 static const char * scan_string(NodeTag type);
 
@@ -253,6 +301,16 @@ _PG_init(void)
                                                             NULL,
                                                             NULL,
                                                             NULL);
+        DefineCustomBoolVariable("pg_mon.log_new_query",
+                                                            "Log the new query.",
+                                                            NULL,
+                                                            &CONFIG_LOG_NEW_QUERY,
+                                                            CONFIG_LOG_NEW_QUERY,
+                                                            PGC_SUSET,
+                                                            0,
+                                                            NULL,
+                                                            NULL,
+                                                            NULL);
         /*
          * Request additional shared resources.  (These are no-ops if we're not in
          * the postmaster process.)  We'll allocate or attach to the shared
@@ -272,6 +330,8 @@ _PG_init(void)
         ExecutorFinish_hook = pgmon_ExecutorFinish;
         prev_ExecutorEnd = ExecutorEnd_hook;
         ExecutorEnd_hook = pgmon_ExecutorEnd;
+        prev_ProcessUtility = ProcessUtility_hook;
+	    ProcessUtility_hook = PU_hook;
 }
 
 /*
@@ -286,7 +346,7 @@ _PG_fini(void)
         ExecutorRun_hook = prev_ExecutorRun;
         ExecutorFinish_hook = prev_ExecutorFinish;
         ExecutorEnd_hook = prev_ExecutorEnd;
-
+        ProcessUtility_hook = prev_ProcessUtility;
 }
 
 
@@ -438,23 +498,49 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 {
     uint64		queryId = queryDesc->plannedstmt->queryId;
 
-        if (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0)
+    if (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0)
+    {
+            /*
+             * Make sure stats accumulation is done.
+             * (Note: it's okay if several levels of hook all do this.)
+             */
+            InstrEndLoop(queryDesc->totaltime);
+            InstrEndLoop(queryDesc->planstate->instrument);
+
+            /* Save query information */
+            pgmon_exec_store(queryDesc);
+    }
+
+    if (prev_ExecutorEnd)
+            prev_ExecutorEnd(queryDesc);
+    else
+            standard_ExecutorEnd(queryDesc);
+}
+
+/*
+ * ProcessUtility hook
+ */
+_PU_HOOK
+{
+    if (CONFIG_LOG_NEW_QUERY)
+    {
+        switch (nodeTag(pstmt->utilityStmt))
         {
-                /*
-                 * Make sure stats accumulation is done.
-                 * (Note: it's okay if several levels of hook all do this.)
-                 */
-                InstrEndLoop(queryDesc->totaltime);
-                InstrEndLoop(queryDesc->planstate->instrument);
-
-                /* Save query information */
-                pgmon_exec_store(queryDesc);
+            case T_AlterRoleStmt:
+                break;
+            default:
+                ereport(LOG, (errmsg("new query registered from pg_mon"), errhint("%s", queryString)));
+                break;
         }
-
-        if (prev_ExecutorEnd)
-                prev_ExecutorEnd(queryDesc);
-        else
-                standard_ExecutorEnd(queryDesc);
+    }
+    if (prev_ProcessUtility)
+    {
+        _prev_hook;
+    }
+    else
+    {
+        _standard_ProcessUtility;
+    }
 }
 
 static void
@@ -482,7 +568,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
         if (CONFIG_PLAN_INFO_IMMEDIATE && !CONFIG_PLAN_INFO_DISABLE)
         {
             LWLockAcquire(mon_lock, LW_SHARED);
-            entry = create_or_get_entry(temp_entry, temp_entry.queryid);
+            entry = create_or_get_entry(temp_entry, temp_entry.queryid, queryDesc);
 
             e = (volatile mon_rec *) entry;
             SpinLockAcquire(&e->mutex);
@@ -508,7 +594,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
                 return;
 
         LWLockAcquire(mon_lock, LW_SHARED);
-        entry = create_or_get_entry(temp_entry, queryId);
+        entry = create_or_get_entry(temp_entry, queryId, queryDesc);
 
         e = (volatile mon_rec *) entry;
         SpinLockAcquire(&e->mutex);
@@ -600,14 +686,13 @@ pgmon_exec_store(QueryDesc *queryDesc)
         LWLockRelease(mon_lock);
 }
 
-
 /*
  * Find the required hash table entry if not found then copy the
  * contents of temp_entry, otherwise return the entry. The caller should have
  * shared lock on hash_table which could be upgraded to exclusive mode, if new
  * entry has to be added.
  */
-static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId)
+static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDesc *queryDesc)
 {
     mon_rec *entry = NULL;
     bool found = false;
@@ -635,6 +720,12 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId)
         {
             *entry = temp_entry;
             SpinLockInit(&entry->mutex);
+
+            /* Since this is a new query,  log the query text */
+            if (CONFIG_LOG_NEW_QUERY)
+            {
+                ereport(LOG, (errmsg("new query registered from pg_mon"), errhint("%s", queryDesc->sourceText)));
+            }
         }
     }
 

@@ -1,3 +1,4 @@
+set pg_mon.log_new_query = false;
 create extension pg_mon;
 create extension pg_stat_statements;
 
@@ -7,6 +8,14 @@ insert into t values (generate_series(1,10), repeat('test_pg_mon', 10));
 insert into t2 values (generate_series(1,10), repeat('test_pg_mon', 10));
 analyze t;
 analyze t2;
+
+-- Test log_new_query flag
+set pg_mon.log_new_query = true;
+select count(*) from t;
+create role check_pg_mon_logging;
+alter role check_pg_mon_logging with password 'donotlogme';
+drop role check_pg_mon_logging;
+set pg_mon.log_new_query = false;
 
 -- Seq scan query output
 select pg_mon_reset();
