@@ -109,20 +109,20 @@ static ExecutorRun_hook_type prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
 static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
 static ProcessUtility_hook_type prev_ProcessUtility = NULL;
-
 static void pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags);
+
 #if PG_VERSION_NUM < 160000
-static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,
-                    uint64 count);
-#define _ER_hook \
-     static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,\
-                        uint64 count)
-#else
 static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,\
                     uint64 count, bool execute_once);
 #define _ER_hook \
     static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,\
                                     uint64 count, bool execute_once)
+#else
+static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,
+                    uint64 count);
+#define _ER_hook \
+     static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,\
+                        uint64 count)
 #endif
 static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
 static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
@@ -227,15 +227,8 @@ shmem_startup(void)
         memset(&info, 0, sizeof(info));
         info.keysize = sizeof(uint32);
         info.entrysize = sizeof(mon_rec);
-#if PG_VERSION_NUM > 100000
-        info.hash = uint32_hash;
-
-        mon_ht = ShmemInitHash("mon_hash", MON_HT_SIZE, MON_HT_SIZE,
-                                &info, HASH_ELEM | HASH_FUNCTION);
-#else
         mon_ht = ShmemInitHash("mon_hash", MON_HT_SIZE, MON_HT_SIZE,
                                 &info, HASH_ELEM);
-#endif
         mon_lock = &(GetNamedLWLockTranche("mon_lock"))->lock;
         LWLockRelease(AddinShmemInitLock);
 
