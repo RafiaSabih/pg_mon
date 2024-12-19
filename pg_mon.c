@@ -111,8 +111,19 @@ static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
 static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 
 static void pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags);
-static void pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
-                                uint64 count, bool execute_once);
+#if PG_VERSION_NUM < 160000
+static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,
+                    uint64 count);
+#define _ER_hook \
+     static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,\
+                        uint64 count)
+#else
+static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,\
+                    uint64 count, bool execute_once);
+#define _ER_hook \
+    static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,\
+                                    uint64 count, bool execute_once)
+#endif
 static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
 static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
@@ -325,7 +336,7 @@ _PG_init(void)
         prev_ExecutorStart = ExecutorStart_hook;
         ExecutorStart_hook = pgmon_ExecutorStart;
         prev_ExecutorRun = ExecutorRun_hook;
-        ExecutorRun_hook = pgmon_ExecutorRun;
+        ExecutorRun_hook = ER_hook;
         prev_ExecutorFinish = ExecutorFinish_hook;
         ExecutorFinish_hook = pgmon_ExecutorFinish;
         prev_ExecutorEnd = ExecutorEnd_hook;
@@ -423,9 +434,7 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
 /*
  * ExecutorRun hook: all we need do is track nesting depth
  */
-static void
-pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
-                                        uint64 count, bool execute_once)
+_ER_hook
 {
         nesting_level++;
         PG_TRY();
@@ -925,7 +934,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->seq_scans[n] != 0; n++)
-                            datums[idx++] = ObjectIdGetDatum(&entry->seq_scans[n]);
+                            datums[idx++] = ObjectIdGetDatum(entry->seq_scans[n]);
                     arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
@@ -937,7 +946,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->index_scans[n] != 0; n++)
-                            datums[idx++] = ObjectIdGetDatum(&entry->index_scans[n]);
+                            datums[idx++] = ObjectIdGetDatum(entry->index_scans[n]);
                     arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
@@ -949,7 +958,7 @@ pg_mon(PG_FUNCTION_ARGS)
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->bitmap_scans[n] != 0; n++)
-                            datums[idx++] = ObjectIdGetDatum(&entry->bitmap_scans[n]);
+                            datums[idx++] = ObjectIdGetDatum(entry->bitmap_scans[n]);
                     arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
