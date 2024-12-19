@@ -1043,9 +1043,6 @@ pg_mon(PG_FUNCTION_ARGS)
 
         LWLockRelease(mon_lock);
 
-        /* clean up and return the tuplestore */
-        tuplestore_donestoring(tupstore);
-
         rsinfo->returnMode = SFRM_Materialize;
         rsinfo->setResult = tupstore;
         rsinfo->setDesc = tupdesc;
