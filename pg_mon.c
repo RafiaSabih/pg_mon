@@ -40,7 +40,6 @@
 
 #include "tcop/utility.h"
 
-
 Datum		pg_mon(PG_FUNCTION_ARGS);
 Datum		pg_mon_reset(PG_FUNCTION_ARGS);
 
@@ -92,7 +91,9 @@ typedef struct mon_rec
 static int	nesting_level = 0;
 
 extern void _PG_init(void);
+#if PG_VERSION_NUM < 150000
 extern void _PG_fini(void);
+#endif
 
 /* LWlock to mange the reading and writing the hash table. */
 LWLock	   *mon_lock;
@@ -111,23 +112,37 @@ static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
 static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 static void pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags);
 
-#if PG_VERSION_NUM < 160000
+#if PG_VERSION_NUM < 170000
 static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,\
                     uint64 count, bool execute_once);
 #define _ER_hook \
     static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,\
                                     uint64 count, bool execute_once)
+#define _prev_ER_hook \
+    prev_ExecutorRun(queryDesc,  direction,\
+                         count,  execute_once)
+#define _standard_ExecutorRun \
+    standard_ExecutorRun(queryDesc,  direction,\
+                         count,  execute_once)
 #else
 static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,
                     uint64 count);
 #define _ER_hook \
      static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,\
                         uint64 count)
+#define _prev_ER_hook \
+    prev_ExecutorRun(queryDesc,  direction,\
+                         count)
+#define _standard_ExecutorRun \
+    standard_ExecutorRun(queryDesc,  direction,\
+                         count)
 #endif
+
 static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
 static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
 static void pgmon_exec_store(QueryDesc *queryDesc);
+
 #if PG_VERSION_NUM < 130000
 static void PU_hook(PlannedStmt *pstmt, const char *queryString,
 						   ProcessUtilityContext context, ParamListInfo params,
@@ -173,8 +188,13 @@ static void PU_hook(PlannedStmt *pstmt, const char *queryString,
 #define _standard_ProcessUtility \
         standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
 #endif
+#if (PG_VERSION_NUM >= 150000)
+static shmem_request_hook_type prev_shmem_request_hook = NULL;
+static void ourextension_shmem_request(void);
+#endif
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
+static void shmem_startup(void);
 static void shmem_shutdown(int code, Datum arg);
 
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
@@ -206,39 +226,6 @@ static int64 row_bucket_bounds[ROWNUMBUCKETS] = {
  * current query
  */
 static mon_rec temp_entry;
-/*
- * shmem_startup hook: allocate and attach to shared memory,
- */
-static void
-shmem_startup(void)
-{
-        HASHCTL		info;
-
-        if (prev_shmem_startup_hook)
-                prev_shmem_startup_hook();
-
-        mon_ht = NULL;
-
-        /*
-         * Create or attach to the shared memory state, including hash table
-         */
-        LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
-
-        memset(&info, 0, sizeof(info));
-        info.keysize = sizeof(uint32);
-        info.entrysize = sizeof(mon_rec);
-        mon_ht = ShmemInitHash("mon_hash", MON_HT_SIZE, MON_HT_SIZE,
-                                &info, HASH_ELEM);
-        mon_lock = &(GetNamedLWLockTranche("mon_lock"))->lock;
-        LWLockRelease(AddinShmemInitLock);
-
-       /*
-        * If we're in the postmaster (or a standalone backend...), set up a shmem
-        * exit hook to dump the statistics to disk.
-        */
-    if (!IsUnderPostmaster)
-            on_shmem_exit(shmem_shutdown, (Datum) 0);
-}
 
 /*
  * shmem_shutdown hook
@@ -263,7 +250,6 @@ qmon_memsize(void)
         return hash_estimate_size(MON_HT_SIZE, sizeof(mon_rec));
 
 }
-
 /*
  * Module Load Callback
  */
@@ -320,9 +306,13 @@ _PG_init(void)
          * the postmaster process.)  We'll allocate or attach to the shared
          * resources in *_shmem_startup().
          */
-        RequestAddinShmemSpace(qmon_memsize());
-        RequestNamedLWLockTranche("mon_lock", 1);
-
+#if (PG_VERSION_NUM >= 150000)
+	prev_shmem_request_hook = shmem_request_hook;
+	shmem_request_hook = ourextension_shmem_request;
+#else
+	RequestAddinShmemSpace(qmon_memsize());
+    RequestNamedLWLockTranche("mon_lock", 1);
+#endif
         /* Install Hooks */
         prev_shmem_startup_hook = shmem_startup_hook;
         shmem_startup_hook = shmem_startup;
@@ -338,9 +328,24 @@ _PG_init(void)
 	    ProcessUtility_hook = PU_hook;
 }
 
+#if (PG_VERSION_NUM >= 150000)
+/*
+ * Requests any additional shared memory required for our extension
+ */
+static void
+ourextension_shmem_request(void)
+{
+	if (prev_shmem_request_hook)
+		prev_shmem_request_hook();
+
+	RequestAddinShmemSpace(qmon_memsize());
+    RequestNamedLWLockTranche("mon_lock", 1);
+}
+#endif
 /*
  * Module unload callback
  */
+#if PG_VERSION_NUM < 150000
 void
 _PG_fini(void)
 {
@@ -352,7 +357,40 @@ _PG_fini(void)
         ExecutorEnd_hook = prev_ExecutorEnd;
         ProcessUtility_hook = prev_ProcessUtility;
 }
+#endif
+/*
+ * shmem_startup hook: allocate and attach to shared memory,
+ */
+static void
+shmem_startup(void)
+{
+        HASHCTL		info;
 
+        if (prev_shmem_startup_hook)
+            prev_shmem_startup_hook();
+
+        mon_ht = NULL;
+
+        /*
+         * Create or attach to the shared memory state, including hash table
+         */
+        LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+
+        memset(&info, 0, sizeof(info));
+        info.keysize = sizeof(uint64);
+        info.entrysize = sizeof(mon_rec);
+        mon_ht = ShmemInitHash("mon_hash", MON_HT_SIZE, MON_HT_SIZE,
+                                &info, HASH_ELEM | HASH_BLOBS);
+        mon_lock = &(GetNamedLWLockTranche("mon_lock"))->lock;
+        LWLockRelease(AddinShmemInitLock);
+
+       /*
+        * If we're in the postmaster (or a standalone backend...), set up a shmem
+        * exit hook to dump the statistics to disk.
+        */
+    if (!IsUnderPostmaster)
+            on_shmem_exit(shmem_shutdown, (Datum) 0);
+}
 
 /*
  * ExecutorStart hook: start up logging if needed
@@ -433,9 +471,14 @@ _ER_hook
         PG_TRY();
         {
                 if (prev_ExecutorRun)
-                        prev_ExecutorRun(queryDesc, direction, count, execute_once);
+                {
+                    _prev_ER_hook;
+                }
                 else
-                        standard_ExecutorRun(queryDesc, direction, count, execute_once);
+                {
+                    _standard_ExecutorRun;
+                }
+
 #if PG_VERSION_NUM < 130000
                 nesting_level--;
 #endif
