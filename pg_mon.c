@@ -96,7 +96,7 @@ extern void _PG_fini(void);
 #endif
 
 /* LWlock to mange the reading and writing the hash table. */
-LWLock	   *mon_lock;
+static LWLock	   *mon_lock;
 
 typedef enum AddHist{
             QUERY_TIME,
@@ -112,7 +112,7 @@ static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
 static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 static void pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags);
 
-#if PG_VERSION_NUM < 170000
+#if PG_VERSION_NUM < 180000
 static void ER_hook(QueryDesc *queryDesc, ScanDirection direction,\
                     uint64 count, bool execute_once);
 #define _ER_hook \
