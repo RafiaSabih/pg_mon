@@ -948,8 +948,8 @@ pg_mon(PG_FUNCTION_ARGS)
                 Datum	   *rownumdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
                 Datum		values[MON_COLS];
                 bool		nulls[MON_COLS] = {0};
-                int			i = 0, n, idx = 0, last_fill_bucket = 0;
-                ArrayType  *arry = NULL;
+                int			i = 0, last_fill_bucket = 0, n = 0, idx = 0;
+                ArrayType  *arry;
 
                 memset(values, 0, sizeof(values));
                 memset(nulls, 0, sizeof(nulls));
@@ -1020,7 +1020,8 @@ pg_mon(PG_FUNCTION_ARGS)
                     }
                     arry = construct_array(datums, idx, OIDOID, sizeof(Oid), true, 'i');
 #endif
-                values[i++] = PointerGetDatum(arry);
+                    values[i++] = PointerGetDatum(arry);
+                }
                 values[i++] = NameGetDatum(&entry->other_scan);
                 values[i++] = Int32GetDatum(entry->NestedLoopJoin);
                 values[i++] = Int32GetDatum(entry->HashJoin);
