@@ -970,7 +970,13 @@ pg_mon(PG_FUNCTION_ARGS)
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->seq_scans[n] != 0; n++)
+                    {
+#if PG_VERSION_NUM < 160000
+                            datums[idx++] = ObjectIdGetDatum(&entry->seq_scans[n]);
+#else
                             datums[idx++] = ObjectIdGetDatum(entry->seq_scans[n]);
+#endif
+                    }
                     arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
@@ -982,7 +988,13 @@ pg_mon(PG_FUNCTION_ARGS)
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->index_scans[n] != 0; n++)
+                    {
+#if PG_VERSION_NUM < 160000
+                            datums[idx++] = ObjectIdGetDatum(&entry->index_scans[n]);
+#else
                             datums[idx++] = ObjectIdGetDatum(entry->index_scans[n]);
+#endif
+                    }
                     arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
@@ -994,7 +1006,13 @@ pg_mon(PG_FUNCTION_ARGS)
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->bitmap_scans[n] != 0; n++)
+                    {
+#if PG_VERSION_NUM < 160000
+                            datums[idx++] = ObjectIdGetDatum(&entry->bitmap_scans[n]);
+#else
                             datums[idx++] = ObjectIdGetDatum(entry->bitmap_scans[n]);
+#endif
+                    }
                     arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
@@ -1079,6 +1097,10 @@ pg_mon(PG_FUNCTION_ARGS)
 
         LWLockRelease(mon_lock);
 
+#if PG_VERSION_NUM < 150000
+        /* clean up and return the tuplestore */
+        tuplestore_donestoring(tupstore);
+#endif
         rsinfo->returnMode = SFRM_Materialize;
         rsinfo->setResult = tupstore;
         rsinfo->setDesc = tupdesc;
