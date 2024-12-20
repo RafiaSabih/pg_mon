@@ -974,10 +974,10 @@ pg_mon(PG_FUNCTION_ARGS)
 #if PG_VERSION_NUM < 160000
                             datums[idx++] = ObjectIdGetDatum(&entry->seq_scans[n]);
 #else
-                            datums[idx++] = ObjectIdGetDatum(entry->seq_scans[n]);
+                            datums[idx++] = ObjectIdGetDatum(*(Oid *)&entry->seq_scans[n]);
 #endif
                     }
-                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
+                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
                 if (!entry->ModifyTable && entry->index_scans[0] == 0)
@@ -992,10 +992,10 @@ pg_mon(PG_FUNCTION_ARGS)
 #if PG_VERSION_NUM < 160000
                             datums[idx++] = ObjectIdGetDatum(&entry->index_scans[n]);
 #else
-                            datums[idx++] = ObjectIdGetDatum(entry->index_scans[n]);
+                            datums[idx++] = ObjectIdGetDatum(*(Oid *)&entry->index_scans[n]);
 #endif
                     }
-                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
+                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
                 if (!entry->ModifyTable && entry->bitmap_scans[0] == 0)
@@ -1010,10 +1010,10 @@ pg_mon(PG_FUNCTION_ARGS)
 #if PG_VERSION_NUM < 160000
                             datums[idx++] = ObjectIdGetDatum(&entry->bitmap_scans[n]);
 #else
-                            datums[idx++] = ObjectIdGetDatum(entry->bitmap_scans[n]);
+                            datums[idx++] = ObjectIdGetDatum(*(Oid *)&entry->bitmap_scans[n]);
 #endif
                     }
-                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
+                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), true, 'i');
                     values[i++] = PointerGetDatum(arry);
                 }
                 values[i++] = NameGetDatum(&entry->other_scan);
